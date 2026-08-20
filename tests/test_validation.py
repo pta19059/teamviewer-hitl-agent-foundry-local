@@ -26,9 +26,10 @@ class ValidationTests(unittest.TestCase):
     def test_every_documented_write_prompt_and_argument_set_is_executable(self) -> None:
         cases = (
             (
-                "Create a TeamViewer support session with description HITL-Test.",
+                "Create a TeamViewer support session with description HITL-Test "
+                "in group ID g12345678.",
                 "tv_create_session",
-                {"description": "HITL-Test"},
+                {"description": "HITL-Test", "groupid": "g12345678"},
             ),
             (
                 "Update TeamViewer session code s123 notes to Customer confirmed.",
@@ -118,21 +119,82 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("at least one session field", error or "")
 
     def test_empty_session_creation_is_blocked(self) -> None:
-        prompt = "Create a TeamViewer support session."
+        prompt = (
+            "Create a TeamViewer support session with description HITL-Test "
+            "in group ID g12345678."
+        )
         route = route_prompt(prompt)
-        error = validate_invocation(route, prompt, "tv_create_session", {})
+        error = validate_invocation(
+            route, prompt, "tv_create_session", {"groupid": "g12345678"}
+        )
         self.assertIn("Missing required argument(s): description", error or "")
 
     def test_invented_mutable_text_is_blocked(self) -> None:
-        prompt = "Create a TeamViewer session named HITL-Test."
+        prompt = (
+            "Create a TeamViewer session named HITL-Test in group ID g12345678."
+        )
         route = route_prompt(prompt)
         error = validate_invocation(
             route,
             prompt,
             "tv_create_session",
-            {"description": "A different description"},
+            {
+                "description": "A different description",
+                "groupid": "g12345678",
+            },
         )
-        self.assertIn("explicitly supplied", error or "")
+        self.assertIn("explicitly labelled session description", error or "")
+
+    def test_create_session_description_cannot_reuse_group_id(self) -> None:
+        prompt = (
+            "Create a TeamViewer support session with description HITL-Test "
+            "in group ID g12345678."
+        )
+        error = validate_invocation(
+            route_prompt(prompt),
+            prompt,
+            "tv_create_session",
+            {"description": "g12345678", "groupid": "g12345678"},
+        )
+        self.assertIn("explicitly labelled session description", error or "")
+
+    def test_create_session_requires_group_argument_before_approval(self) -> None:
+        prompt = (
+            "Create a TeamViewer session with description HITL-Test "
+            "in group ID g12345678."
+        )
+        route = route_prompt(prompt)
+        error = validate_invocation(
+            route,
+            prompt,
+            "tv_create_session",
+            {"description": "HITL-Test"},
+        )
+        self.assertIn("Missing required argument(s): groupid", error or "")
+
+    def test_create_session_rejects_invented_group_id(self) -> None:
+        prompt = (
+            "Create a TeamViewer session with description HITL-Test "
+            "in group ID g12345678."
+        )
+        route = route_prompt(prompt)
+        invented = validate_invocation(
+            route,
+            prompt,
+            "tv_create_session",
+            {"description": "HITL-Test", "groupid": "g87654321"},
+        )
+        self.assertIn("explicit identifier label", invented or "")
+
+    def test_create_session_rejects_non_selector_value_later_in_prompt(self) -> None:
+        prompt = (
+            "Create a TeamViewer session with description HITL-Test "
+            "in group ID g12345678 and notes g87654321."
+        )
+        route = route_prompt(prompt)
+        self.assertEqual(route.outcome.value, "clarify")
+        self.assertIsNone(route.tool_name)
+        self.assertIn("exactly one existing legacy", route.message or "")
 
     def test_invalid_managed_device_uuid_is_blocked(self) -> None:
         prompt = "Update managed device d1 description to Kiosk."

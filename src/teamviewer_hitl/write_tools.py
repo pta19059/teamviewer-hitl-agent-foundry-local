@@ -16,6 +16,15 @@ def create_mcp_write_tools(teamviewer: Any) -> list[Any]:
         description: Annotated[
             str, Field(min_length=1, max_length=1000, description="Session description")
         ],
+        groupid: Annotated[
+            str,
+            Field(
+                min_length=2,
+                max_length=255,
+                pattern=r"^[gG][0-9]+$",
+                description="Existing legacy Computers & Contacts group ID",
+            ),
+        ],
         tag: Annotated[
             str | None, Field(min_length=1, max_length=255, description="Optional session tag")
         ] = None,
@@ -39,7 +48,10 @@ def create_mcp_write_tools(teamviewer: Any) -> list[Any]:
         ] = None,
     ) -> Any:
         """Create one TeamViewer service-case session after explicit human approval."""
-        arguments: dict[str, Any] = {"description": description}
+        arguments: dict[str, Any] = {
+            "description": description,
+            "groupid": groupid,
+        }
         for key, value in {
             "tag": tag,
             "notes": notes,

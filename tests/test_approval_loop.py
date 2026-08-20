@@ -74,7 +74,9 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_approved_call_uses_only_the_routed_tool_and_is_audited(self) -> None:
         function_call = Content.from_function_call(
-            "call-1", "tv_create_session", arguments={"description": "Help Alice"}
+            "call-1",
+            "tv_create_session",
+            arguments={"description": "Help Alice", "groupid": "g12345678"},
         )
         request = Content.from_function_approval_request("approval-1", function_call)
         runtime, fake_agent, selected = _runtime(
@@ -83,7 +85,10 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
             _result(text="completed", guard_attempted=True),
         )
 
-        prompt = "Create a TeamViewer support session with description Help Alice."
+        prompt = (
+            "Create a TeamViewer support session with description Help Alice "
+            "in group ID g12345678."
+        )
         with patch("builtins.input", return_value="APPROVE"):
             result = await run_turn(runtime, object(), prompt, self.settings)
 
@@ -175,16 +180,33 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
             result = await run_turn(
                 runtime,
                 object(),
-                "Create a TeamViewer support session.",
+                "Create a TeamViewer support session with description Help Alice "
+                "in group ID g12345678.",
                 self.settings,
             )
 
         self.assertIn("Missing required argument(s): description", result)
         approval_input.assert_not_called()
 
+    async def test_create_without_group_never_reaches_model_or_mcp(self) -> None:
+        runtime, fake_agent, _ = _runtime("tv_create_session")
+
+        result = await run_turn(
+            runtime,
+            object(),
+            "Create a TeamViewer support session named HITL-Test.",
+            self.settings,
+        )
+
+        self.assertIn("exactly one existing legacy", result)
+        self.assertIn("No TeamViewer operation was executed", result)
+        self.assertEqual(fake_agent.calls, [])
+
     async def test_approved_result_cannot_claim_execution_if_guard_never_ran(self) -> None:
         function_call = Content.from_function_call(
-            "call-5", "tv_create_session", arguments={"description": "Help Alice"}
+            "call-5",
+            "tv_create_session",
+            arguments={"description": "Help Alice", "groupid": "g12345678"},
         )
         request = Content.from_function_approval_request("approval-5", function_call)
         runtime, _, _ = _runtime(
@@ -197,7 +219,8 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
             result = await run_turn(
                 runtime,
                 object(),
-                "Create a TeamViewer support session with description Help Alice.",
+                "Create a TeamViewer support session with description Help Alice "
+                "in group ID g12345678.",
                 self.settings,
             )
 
@@ -205,11 +228,15 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_second_operation_from_same_prompt_is_rejected(self) -> None:
         first_call = Content.from_function_call(
-            "call-6", "tv_create_session", arguments={"description": "Help Alice"}
+            "call-6",
+            "tv_create_session",
+            arguments={"description": "Help Alice", "groupid": "g12345678"},
         )
         first_request = Content.from_function_approval_request("approval-6", first_call)
         second_call = Content.from_function_call(
-            "call-7", "tv_create_session", arguments={"description": "Help Alice"}
+            "call-7",
+            "tv_create_session",
+            arguments={"description": "Help Alice", "groupid": "g12345678"},
         )
         second_request = Content.from_function_approval_request("approval-7", second_call)
         runtime, fake_agent, _ = _runtime(
@@ -223,7 +250,8 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
             result = await run_turn(
                 runtime,
                 object(),
-                "Create a TeamViewer support session with description Help Alice.",
+                "Create a TeamViewer support session with description Help Alice "
+                "in group ID g12345678.",
                 self.settings,
             )
 
@@ -232,11 +260,14 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(fake_agent.calls[2]["value"].contents[0].approved)
 
     async def test_write_middleware_cannot_execute_without_host_approval_binding(self) -> None:
-        prompt = "Create a TeamViewer support session with description Help Alice."
+        prompt = (
+            "Create a TeamViewer support session with description Help Alice "
+            "in group ID g12345678."
+        )
         guard = InvocationGuard(route_prompt(prompt), prompt)
         context = SimpleNamespace(
             function=SimpleNamespace(name="tv_create_session"),
-            arguments={"description": "Help Alice"},
+            arguments={"description": "Help Alice", "groupid": "g12345678"},
             result=None,
         )
         called = False
@@ -251,12 +282,18 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("No human-approved call", guard.blocked_message or "")
 
     async def test_call_changed_after_approval_is_blocked(self) -> None:
-        prompt = "Create a TeamViewer support session with description Help Alice."
+        prompt = (
+            "Create a TeamViewer support session with description Help Alice "
+            "in group ID g12345678."
+        )
         guard = InvocationGuard(route_prompt(prompt), prompt)
-        guard.bind_approved_call("tv_create_session", {"description": "Help Alice"})
+        guard.bind_approved_call(
+            "tv_create_session",
+            {"description": "Help Alice", "groupid": "g12345678"},
+        )
         context = SimpleNamespace(
             function=SimpleNamespace(name="tv_create_session"),
-            arguments={"description": "Tampered value"},
+            arguments={"description": "Tampered value", "groupid": "g12345678"},
             result=None,
         )
         called = False

@@ -10,7 +10,11 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from .routing import IntentRoute
+from .routing import (
+    IntentRoute,
+    create_session_descriptions,
+    create_session_group_ids,
+)
 
 _SAFE_TEXT_ID = re.compile(r"^[A-Za-z0-9_-]+$")
 _EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
@@ -111,6 +115,7 @@ _WRITE_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset(
             {
                 "description",
+                "groupid",
                 "tag",
                 "notes",
                 "supporter_name",
@@ -118,7 +123,7 @@ _WRITE_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
                 "end_customer_email",
             }
         ),
-        frozenset({"description"}),
+        frozenset({"description", "groupid"}),
     ),
     "tv_update_session": (
         frozenset({"session_code", "description", "tag", "notes"}),
@@ -413,6 +418,23 @@ def _validate_write_arguments(
     if function_name == "tv_create_session":
         if not _nonempty_string(arguments, "description"):
             return "A non-empty session description is required."
+        prompt_descriptions = create_session_descriptions(prompt)
+        if (
+            len(prompt_descriptions) != 1
+            or " ".join(str(arguments["description"]).strip().split())
+            != prompt_descriptions[0]
+        ):
+            return "description must match the single explicitly labelled session description."
+        if not _nonempty_string(arguments, "groupid") or re.fullmatch(
+            r"g[0-9]+", str(arguments["groupid"]), re.IGNORECASE
+        ) is None:
+            return "groupid must be a TeamViewer legacy group ID such as g12345678."
+        prompt_group_ids = create_session_group_ids(prompt)
+        if (
+            len(prompt_group_ids) != 1
+            or str(arguments["groupid"]).casefold() != prompt_group_ids[0].casefold()
+        ):
+            return "groupid must match the single immediate group ID selector in the request."
     elif function_name == "tv_update_session":
         if not _safe_text_identifier(arguments, "session_code"):
             return "A valid session code is required."

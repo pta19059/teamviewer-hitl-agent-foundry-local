@@ -67,10 +67,77 @@ _OPERATIONAL_VERB = re.compile(
     r"activate|enable|assign|apply|list|show|get|find)\b",
     re.IGNORECASE,
 )
+_CREATE_SESSION_GROUP_ID = re.compile(
+    r"\b(?:in|for|within)\s+(?:legacy\s+)?group\s+id\s+(?P<groupid>g[0-9]+)\b",
+    re.IGNORECASE,
+)
+_CREATE_SESSION_GROUP_ID_LABEL = re.compile(
+    r"\b(?:legacy\s+)?group\s+id\b", re.IGNORECASE
+)
+_CREATE_SESSION_GROUP_NAME_LABEL = re.compile(
+    r"\b(?:legacy\s+)?group\s+name\b", re.IGNORECASE
+)
+_CREATE_SESSION_GROUP_ID_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])g[0-9]+(?![A-Za-z0-9])", re.IGNORECASE
+)
+_CREATE_SESSION_DESCRIPTION = re.compile(
+    r"\b(?:with\s+description|named)\s+(?P<description>.+?)"
+    r"(?=\s+(?:in|for|within)\s+(?:legacy\s+)?group\s+id\s+g[0-9]+\b)",
+    re.IGNORECASE,
+)
+_CREATE_SESSION_DESCRIPTION_LABEL = re.compile(
+    r"\b(?:with\s+description|named)\b", re.IGNORECASE
+)
+_CREATE_SESSION_GROUP_GUIDANCE = (
+    "Creating a TeamViewer support session requires exactly one existing legacy Computers & "
+    "Contacts selector: 'in group ID <GROUP_ID>'. List device groups first if needed."
+)
+_CREATE_SESSION_DESCRIPTION_GUIDANCE = (
+    "Creating a TeamViewer support session requires exactly one explicit description before "
+    "the group selector: 'with description <DESCRIPTION> in group ID <GROUP_ID>'."
+)
 
 
 def _has(pattern: re.Pattern[str], text: str) -> bool:
     return pattern.search(text) is not None
+
+
+def create_session_group_ids(text: str) -> tuple[str, ...]:
+    """Capture every immediate, explicitly labelled create-session group ID."""
+    return tuple(
+        match.group("groupid") for match in _CREATE_SESSION_GROUP_ID.finditer(text)
+    )
+
+
+def create_session_descriptions(text: str) -> tuple[str, ...]:
+    """Capture explicitly labelled descriptions immediately before the group selector."""
+    values: list[str] = []
+    for match in _CREATE_SESSION_DESCRIPTION.finditer(text):
+        value = " ".join(match.group("description").strip().split())
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1].strip()
+        values.append(value)
+    return tuple(values)
+
+
+def _has_one_create_session_group_id(text: str) -> bool:
+    return (
+        len(create_session_group_ids(text)) == 1
+        and len(_CREATE_SESSION_GROUP_ID_LABEL.findall(text)) == 1
+        and len(_CREATE_SESSION_GROUP_ID_TOKEN.findall(text)) == 1
+        and not _has(_CREATE_SESSION_GROUP_NAME_LABEL, text)
+    )
+
+
+def _create_session_prompt_error(text: str) -> str | None:
+    if not _has_one_create_session_group_id(text):
+        return _CREATE_SESSION_GROUP_GUIDANCE
+    if (
+        len(create_session_descriptions(text)) != 1
+        or len(_CREATE_SESSION_DESCRIPTION_LABEL.findall(text)) != 1
+    ):
+        return _CREATE_SESSION_DESCRIPTION_GUIDANCE
+    return None
 
 
 def _write_matches(text: str, lowered: str) -> list[tuple[str, str]]:
@@ -225,6 +292,10 @@ def route_prompt(prompt: str) -> IntentRoute:
             )
         if tool_name not in READ_ONLY_TOOLS | APPROVAL_REQUIRED_TOOLS:
             return _clarify(f"{tool_name} is not available under the current safety policy.")
+        if tool_name == "tv_create_session":
+            create_error = _create_session_prompt_error(text)
+            if create_error:
+                return _clarify(create_error)
         return _tool_route(f"explicit:{tool_name}", tool_name)
 
     write_matches = _write_matches(text, lowered)
@@ -237,6 +308,10 @@ def route_prompt(prompt: str) -> IntentRoute:
         return _clarify("Request one state-changing TeamViewer operation at a time.")
     if write_matches:
         intent, tool_name = write_matches[0]
+        if tool_name == "tv_create_session":
+            create_error = _create_session_prompt_error(text)
+            if create_error:
+                return _clarify(create_error)
         if _has_multiple_write_targets(text) or any(
             re.search(pattern, lowered)
             for pattern in (

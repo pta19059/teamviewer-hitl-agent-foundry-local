@@ -33,6 +33,7 @@ class WriteToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_session_creation_dispatches_only_through_exact_mcp_tool(self) -> None:
         await self.tools["tv_create_session"].func(
             description="Help Alice",
+            groupid="g12345678",
             tag="urgent",
             end_customer_name="Alice",
             end_customer_email="alice@example.com",
@@ -44,6 +45,7 @@ class WriteToolTests(unittest.IsolatedAsyncioTestCase):
                     "tv_create_session",
                     {
                         "description": "Help Alice",
+                        "groupid": "g12345678",
                         "tag": "urgent",
                         "end_customer": {
                             "name": "Alice",
@@ -53,6 +55,11 @@ class WriteToolTests(unittest.IsolatedAsyncioTestCase):
                 )
             ],
         )
+
+    async def test_session_creation_requires_group_id(self) -> None:
+        with self.assertRaises(TypeError):
+            await self.tools["tv_create_session"].func(description="Help Alice")
+        self.assertEqual(self.mcp.calls, [])
 
     async def test_each_wrapper_dispatches_to_the_same_named_mcp_operation(self) -> None:
         cases = (

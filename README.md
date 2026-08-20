@@ -312,10 +312,18 @@ Type `exit` or `quit` to stop the interactive session.
 
 ### 9. Test Human-in-the-Loop approval
 
-Use a test target that you are authorized to operate:
+TeamViewer service cases must be created in a legacy Computers & Contacts group. List those groups
+through MCP first and copy the exact group ID:
 
 ```powershell
-teamviewer-hitl "Create a TeamViewer support session with description HITL-Test."
+teamviewer-hitl "List all device groups."
+```
+
+Then use a test target that you are authorized to operate, replacing `<GROUP_ID>` with an ID from
+that result:
+
+```powershell
+teamviewer-hitl "Create a TeamViewer support session with description HITL-Test in group ID <GROUP_ID>."
 ```
 
 Before the MCP call executes, the application displays:
@@ -324,7 +332,10 @@ Before the MCP call executes, the application displays:
 --- HUMAN APPROVAL REQUIRED ---
 Tool: tv_create_session
 Arguments:
-...
+{
+  "description": "HITL-Test",
+  "groupid": "<GROUP_ID>"
+}
 Type APPROVE to execute this exact call. Any other response rejects it.
 ```
 
@@ -379,6 +390,7 @@ teamviewer-hitl "Hello"
 teamviewer-hitl "Show my TeamViewer account summary."
 teamviewer-hitl "List the online TeamViewer devices."
 teamviewer-hitl "Show the devices in StefanoGroup."
+teamviewer-hitl "List all device groups."
 teamviewer-hitl "List all TeamViewer sessions."
 teamviewer-hitl "Get TeamViewer session code s123."
 teamviewer-hitl "Get device ID d1234567890."
@@ -386,7 +398,7 @@ teamviewer-hitl "Get connection report ID c123."
 teamviewer-hitl "Show event logs from 2026-08-19T00:00:00Z to 2026-08-20T00:00:00Z."
 
 # Writes: each stops for exact APPROVE input
-teamviewer-hitl "Create a TeamViewer support session with description HITL-Test."
+teamviewer-hitl "Create a TeamViewer support session with description HITL-Test in group ID <GROUP_ID>."
 teamviewer-hitl "Update TeamViewer session code s123 notes to Customer confirmed."
 teamviewer-hitl "Close TeamViewer session code s123."
 teamviewer-hitl "Set the description of managed device ID 550e8400-e29b-41d4-a716-446655440000 to Lobby kiosk."
@@ -399,6 +411,12 @@ For a targeted read or write, label the identifier explicitly as `session code`,
 session name is never silently treated as an ID. If you know only a name, run a read/list command
 first, then submit a second command containing the returned identifier. Relative dates such as
 `yesterday` are not converted by the model; supply an explicit ISO 8601 range.
+
+Session creation requires exactly one explicit legacy Computers & Contacts selector: `in group ID
+<GROUP_ID>`. Use the ID returned by `List all device groups.`; a managed-device group is a separate
+TeamViewer namespace and cannot be used for a service case. Group-name creation is intentionally
+not exposed because a typo can create an unintended legacy group. A missing, malformed, or double
+group selector is rejected before the model, approval prompt, or MCP write runs.
 
 The following operations are deliberately unavailable:
 
@@ -474,6 +492,22 @@ The token is valid but lacks the scope for the requested endpoint. For example,
 `tv_list_devices` requires `Computers.View`, commonly shown as **Computers & Contacts - View
 entries**. Create a replacement script token with the missing scope and update `.env`.
 
+### Session creation returns `Missing parameter groupid or groupname`
+
+The TeamViewer API requires every new service case to identify a legacy Computers & Contacts
+group. Current builds reject an incomplete create request before approval. Obtain the group ID and
+include it explicitly:
+
+```powershell
+teamviewer-hitl "List all device groups."
+teamviewer-hitl "Create a TeamViewer support session with description HITL-Test in group ID <GROUP_ID>."
+```
+
+The pinned official MCP schema does not advertise the required `groupid`, but its call handler
+forwards supplied session fields to TeamViewer. This application therefore uses Agent Framework's
+narrow per-tool extra-argument allow-list and a stricter local wrapper while keeping the write
+exclusively on the official MCP transport.
+
 ### The local model describes a tool but does not call it
 
 The host requires the exact routed function name and verifies that its invocation middleware ran.
@@ -528,6 +562,11 @@ TEAMVIEWER_MCP_BEARER_TOKEN=YOUR_MCP_SERVER_BEARER_TOKEN
 
 Use HTTPS outside localhost. `TEAMVIEWER_MCP_BEARER_TOKEN` protects access to your MCP server; it
 is separate from the TeamViewer API token used by that server.
+
+The pinned `TV_Remote_MCP` revision is verified by this project over local stdio. Its custom
+`--http` branch does not currently return the standard MCP `CallToolResult` envelope, so do not use
+that branch directly as `TEAMVIEWER_MCP_URL`; remote mode requires a conformant Streamable HTTP MCP
+deployment or adapter.
 
 The `tv_list_devices_in_group` composition works with both local stdio and remote HTTP MCP
 transports. It never calls TeamViewer Web API directly from Python; every TeamViewer request crosses

@@ -28,7 +28,9 @@ class RoutingTests(unittest.TestCase):
 
     def test_all_supported_write_intents_have_exact_routes(self) -> None:
         cases = {
-            "Create a TeamViewer support session named HITL-Test.": "tv_create_session",
+            (
+                "Create a TeamViewer support session named HITL-Test in group ID g12345678."
+            ): "tv_create_session",
             (
                 "Update TeamViewer session code s123 description to Escalated case."
             ): "tv_update_session",
@@ -43,6 +45,54 @@ class RoutingTests(unittest.TestCase):
         for prompt, expected in cases.items():
             with self.subTest(prompt=prompt):
                 self.assert_tool(prompt, expected, mutating=True)
+
+    def test_create_session_requires_exactly_one_legacy_group_selector(self) -> None:
+        for prompt in (
+            "Create a TeamViewer support session named HITL-Test.",
+            "Create a TeamViewer support session named HITL-Test in group Support.",
+            "Create a TeamViewer support session named HITL-Test in group name Support.",
+            "Create a TeamViewer support session named HITL-Test in group ID invalid.",
+            (
+                "Create a TeamViewer support session named HITL-Test in group ID "
+                "g12345678 and in group ID g87654321."
+            ),
+            (
+                "Create a TeamViewer support session named HITL-Test in group ID "
+                "g12345678 and group ID g87654321."
+            ),
+            (
+                "Create a TeamViewer support session named HITL-Test in group ID "
+                "g12345678 and group name Support."
+            ),
+            (
+                "Create a TeamViewer support session named HITL-Test in group ID "
+                "g12345678 or g87654321."
+            ),
+            (
+                "Create a TeamViewer support session named HITL-Test in group ID "
+                "g12345678, g87654321."
+            ),
+            "Use only tv_create_session with description HITL-Test.",
+        ):
+            with self.subTest(prompt=prompt):
+                route = route_prompt(prompt)
+                self.assertEqual(route.outcome, RouteOutcome.CLARIFY)
+                self.assertIsNone(route.tool_name)
+                self.assertIn("exactly one existing legacy", route.message or "")
+
+    def test_create_session_requires_one_explicit_description(self) -> None:
+        for prompt in (
+            "Create a TeamViewer support session in group ID g12345678.",
+            (
+                "Create a TeamViewer support session named First with description Second "
+                "in group ID g12345678."
+            ),
+        ):
+            with self.subTest(prompt=prompt):
+                route = route_prompt(prompt)
+                self.assertEqual(route.outcome, RouteOutcome.CLARIFY)
+                self.assertIsNone(route.tool_name)
+                self.assertIn("exactly one explicit description", route.message or "")
 
     def test_supported_write_routes_do_not_depend_on_word_order(self) -> None:
         cases = {

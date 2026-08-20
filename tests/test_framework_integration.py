@@ -19,7 +19,7 @@ from teamviewer_hitl.write_tools import create_mcp_write_tools
 
 
 class _ScriptedChatClient(FunctionInvocationLayer, BaseChatClient):
-    def __init__(self) -> None:
+    def __init__(self, first_arguments: dict[str, Any] | None = None) -> None:
         super().__init__(
             function_invocation_configuration={
                 "max_function_calls": 1,
@@ -27,6 +27,11 @@ class _ScriptedChatClient(FunctionInvocationLayer, BaseChatClient):
             }
         )
         self.model_calls = 0
+        self.first_arguments = (
+            first_arguments
+            if first_arguments is not None
+            else {"description": "HITL-Test", "groupid": "g12345678"}
+        )
 
     async def _inner_get_response(
         self,
@@ -42,7 +47,7 @@ class _ScriptedChatClient(FunctionInvocationLayer, BaseChatClient):
             call = Content.from_function_call(
                 "call-1",
                 "tv_create_session",
-                arguments={"description": "HITL-Test"},
+                arguments=self.first_arguments,
             )
             return ChatResponse(messages=[Message(role="assistant", contents=[call])])
         return ChatResponse(messages=[Message(role="assistant", contents=["completed"])])
@@ -72,7 +77,8 @@ class AgentFrameworkApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
             operator_id="operator@example.com",
         )
         self.prompt = (
-            "Create a TeamViewer support session with description HITL-Test."
+            "Create a TeamViewer support session with description HITL-Test "
+            "in group ID g12345678."
         )
 
     def tearDown(self) -> None:
@@ -103,7 +109,12 @@ class AgentFrameworkApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "completed")
         self.assertEqual(
             mcp.calls,
-            [("tv_create_session", {"description": "HITL-Test"})],
+            [
+                (
+                    "tv_create_session",
+                    {"description": "HITL-Test", "groupid": "g12345678"},
+                )
+            ],
         )
         self.assertEqual(client.model_calls, 2)
 
@@ -111,6 +122,24 @@ class AgentFrameworkApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
         result, mcp, client = await self._run_with_decision("REJECT")
 
         self.assertEqual(result, "Rejected. No TeamViewer operation was executed.")
+        self.assertEqual(mcp.calls, [])
+        self.assertEqual(client.model_calls, 2)
+
+    async def test_real_framework_blocks_missing_group_before_approval(self) -> None:
+        mcp = _RecordingMCP()
+        create_tool = {
+            item.name: item for item in create_mcp_write_tools(mcp)
+        }["tv_create_session"]
+        client = _ScriptedChatClient({"description": "HITL-Test"})
+
+        async with Agent(client=client, instructions="test", tools=[]) as agent:
+            runtime = AgentRuntime(agent=agent, tools={create_tool.name: create_tool})
+            session = agent.create_session()
+            with patch("builtins.input") as approval_input:
+                result = await run_turn(runtime, session, self.prompt, self.settings)
+
+        self.assertIn("Missing required argument(s): groupid", result)
+        approval_input.assert_not_called()
         self.assertEqual(mcp.calls, [])
         self.assertEqual(client.model_calls, 2)
 

@@ -8,7 +8,7 @@ import re
 import subprocess
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Final
 from urllib.parse import urlparse
 
 from agent_framework import (
@@ -57,6 +57,8 @@ pass only the exact group name. The host resolves both legacy and managed namesp
 ambiguity. A request to create a TeamViewer support session is not a group request. Never claim
 that a device belongs to a group unless the tool result explicitly contains the verified group and
 device list.
+Creating a support session requires exactly one explicit legacy Computers & Contacts group ID.
+Never substitute a managed-device group, and never omit or invent the create-session group ID.
 For managed-group availability, reproduce the tool's availability text exactly: the API cannot
 distinguish a Sleeping device from an Offline device when its isOnline value is false.
 When tv_list_devices_in_group returns status "ok", enumerate every device returned by the
@@ -65,6 +67,12 @@ replace the list with a count unless the user explicitly requests a summary.
 """.strip()
 
 _TOOL_CALL_MARKER = re.compile(r"<\|tool_call\|>.*?<\|/tool_call\|>\s*", re.DOTALL)
+_MCP_ADDITIONAL_TOOL_ARGUMENT_NAMES: Final[dict[str, tuple[str, ...]]] = {
+    # The pinned official MCP handler forwards this required TeamViewer API field,
+    # but its advertised inputSchema omits it. Scope the framework exception to
+    # this one remote tool so no unrelated model argument can cross MCP.
+    "tv_create_session": ("groupid",),
+}
 
 
 @dataclass(slots=True)
@@ -201,6 +209,7 @@ async def open_teamviewer_mcp(settings: Settings) -> AsyncIterator[Any]:
         "description": "Approved TeamViewer investigation and remote-support operations",
         "allowed_tools": ALLOWED_TOOLS,
         "approval_mode": MCP_APPROVAL_MODE,
+        "additional_tool_argument_names": _MCP_ADDITIONAL_TOOL_ARGUMENT_NAMES,
         "load_prompts": False,
     }
 
