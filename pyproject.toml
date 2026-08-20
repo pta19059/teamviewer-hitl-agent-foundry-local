@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "teamviewer-hitl-agent"
+version = "0.1.0"
+description = "Human-approved TeamViewer service-desk agent built with Microsoft Agent Framework"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "agent-framework-core==1.14.0",
+    "agent-framework-foundry==1.11.0",
+    "azure-identity>=1.25.0",
+    "mcp>=1.29.0,<2",
+    "python-dotenv>=1.1.0",
+]
+
+[project.scripts]
+teamviewer-hitl = "teamviewer_hitl.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/teamviewer_hitl"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
