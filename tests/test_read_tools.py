@@ -29,6 +29,7 @@ class ReadToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             set(tools),
             {
+                "tv_list_devices",
                 "tv_list_managed_devices",
                 "tv_list_company_managed_devices",
                 "tv_list_managed_groups",
@@ -45,6 +46,13 @@ class ReadToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all(tool.approval_mode == "never_require" for tool in tools.values())
         )
+
+    async def test_legacy_device_adapter_never_sends_full_list(self) -> None:
+        mcp = _FakeMCP([{"resources": []}])
+
+        await self._tool(mcp, "tv_list_devices").func(online_state="Online")
+
+        self.assertEqual(mcp.calls, [("tv_list_devices", {"online_state": "Online"})])
 
     async def test_managed_devices_are_paginated_and_filtered_locally(self) -> None:
         mcp = _FakeMCP(

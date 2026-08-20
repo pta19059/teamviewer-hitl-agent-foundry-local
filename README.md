@@ -67,6 +67,10 @@ MCP tool name; typed read adapters and the named-group host workflow compose onl
 Ordinary conversation can still initialize the MCP connection at application startup, but it
 performs no TeamViewer data operation and exposes no tool to the model.
 
+The `tv_list_devices` read adapter intentionally hides the upstream optional `full_list` field.
+This prevents local models from adding an unrequested deleted-device filter while preserving the
+official MCP tool name and the supported group-ID and online/offline filters.
+
 ## Prerequisites
 
 This guide assumes Windows 10 or 11 and PowerShell.

@@ -150,6 +150,30 @@ def create_mcp_read_tools(teamviewer: Any) -> list[Any]:
     """Create strict read adapters over the official TeamViewer MCP tools."""
 
     @tool(approval_mode="never_require")
+    async def tv_list_devices(
+        groupid: Annotated[
+            str | None,
+            Field(
+                min_length=2,
+                max_length=255,
+                pattern=r"^[gG][0-9]+$",
+                description="Optional exact legacy Computers & Contacts group ID",
+            ),
+        ] = None,
+        online_state: Annotated[
+            Literal["Online", "Offline"] | None,
+            Field(description="Optional exact availability filter"),
+        ] = None,
+    ) -> Any:
+        """List legacy devices without exposing the upstream full_list argument."""
+        arguments: dict[str, Any] = {}
+        if groupid is not None:
+            arguments["groupid"] = groupid
+        if online_state is not None:
+            arguments["online_state"] = online_state
+        return await teamviewer.call_tool("tv_list_devices", **arguments)
+
+    @tool(approval_mode="never_require")
     async def tv_list_managed_devices(
         online_state: Annotated[
             Literal["Online", "Offline"] | None,
@@ -334,6 +358,7 @@ def create_mcp_read_tools(teamviewer: Any) -> list[Any]:
         return payload
 
     return [
+        tv_list_devices,
         tv_list_managed_devices,
         tv_list_company_managed_devices,
         tv_list_managed_groups,
