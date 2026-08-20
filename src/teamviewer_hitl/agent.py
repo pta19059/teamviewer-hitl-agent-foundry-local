@@ -25,7 +25,7 @@ from azure.identity import AzureCliCredential
 
 from .audit import record_decision
 from .config import Settings
-from .mcp_compositions import list_devices_in_group
+from .mcp_compositions import list_devices_across_namespaces, list_devices_in_group
 from .policy import (
     ALLOWED_TOOLS,
     APPROVAL_REQUIRED_TOOLS,
@@ -217,6 +217,55 @@ def _format_group_devices(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _format_inventory_device(device: dict[str, Any]) -> str:
+    name = _device_value(device, "name", "alias") or "Unnamed"
+    teamviewer_id = _device_value(
+        device, "teamviewerId", "teamviewer_id", "remotecontrol_id"
+    )
+    local_id = _device_value(device, "id", "device_id")
+    availability = _device_value(
+        device, "availability", "online_state", "onlineState"
+    )
+    if availability is None and isinstance(device.get("isOnline"), bool):
+        availability = (
+            "Online"
+            if device["isOnline"]
+            else "Not online (the API does not distinguish Sleeping from Offline)"
+        )
+    identifiers = []
+    if teamviewer_id is not None:
+        identifiers.append(f"TeamViewer ID: {teamviewer_id}")
+    if local_id is not None:
+        identifiers.append(f"device ID: {local_id}")
+    identifiers.append(f"availability: {availability or 'Unknown'}")
+    return f"- {name} ({', '.join(identifiers)})"
+
+
+def _format_all_devices(result: dict[str, Any]) -> str:
+    """Render the two official TeamViewer inventory namespaces separately."""
+    legacy = result.get("legacyDevices")
+    managed = result.get("managedDevices")
+    legacy_devices = legacy if isinstance(legacy, list) else []
+    managed_devices = managed if isinstance(managed, list) else []
+    requested_state = result.get("onlineState") or "All"
+    lines = [
+        f"TeamViewer device inventory (availability filter: {requested_state})",
+        f"Legacy Computers & Contacts devices: {len(legacy_devices)}",
+    ]
+    lines.extend(
+        _format_inventory_device(device)
+        for device in legacy_devices
+        if isinstance(device, dict)
+    )
+    lines.append(f"Company-managed devices: {len(managed_devices)}")
+    lines.extend(
+        _format_inventory_device(device)
+        for device in managed_devices
+        if isinstance(device, dict)
+    )
+    return "\n".join(lines)
+
+
 def discover_foundry_local_endpoint(configured_endpoint: str | None = None) -> str:
     """Return the loopback OpenAI endpoint exposed by the current Foundry Local CLI."""
     endpoint = configured_endpoint
@@ -366,7 +415,18 @@ async def run_turn(
         return _clean_model_text(result.text)
 
     if route.outcome == RouteOutcome.HOST:
-        if route.intent != "group_devices" or runtime.teamviewer is None:
+        if runtime.teamviewer is None:
+            return "The requested host workflow is unavailable. No TeamViewer operation ran."
+        if route.intent == "all_devices":
+            online_state = dict(route.arguments).get("online_state")
+            try:
+                result = await list_devices_across_namespaces(
+                    runtime.teamviewer, online_state
+                )
+            except Exception:
+                return "The TeamViewer MCP inventory lookup failed. No success was reported."
+            return _format_all_devices(result)
+        if route.intent != "group_devices":
             return "The requested host workflow is unavailable. No TeamViewer operation ran."
         group_name = dict(route.arguments).get("group_name")
         if not isinstance(group_name, str) or not group_name.strip():

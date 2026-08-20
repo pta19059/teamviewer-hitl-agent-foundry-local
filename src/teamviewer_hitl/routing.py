@@ -799,7 +799,9 @@ def route_prompt(prompt: str) -> IntentRoute:
             arguments, error = _explicit_read_arguments("tv_list_devices", text)
             if error:
                 return _clarify(error)
-            return _tool_route("legacy_devices", "tv_list_devices", arguments)
+            if "legacy" in lowered or "computers & contacts" in lowered:
+                return _tool_route("legacy_devices", "tv_list_devices", arguments)
+            return _host_route("all_devices", arguments or {})
         return _tool_route("legacy_device", "tv_get_device")
 
     if "teamviewer" in lowered and _OPERATIONAL_VERB.search(text):

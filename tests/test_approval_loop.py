@@ -427,6 +427,62 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("TeamViewer ID: 123 456 789", result)
         self.assertIn("availability: Online", result)
 
+    async def test_generic_device_inventory_reads_both_namespaces_without_model(self) -> None:
+        class FakeMCP:
+            def __init__(self) -> None:
+                self.calls = []
+                self.responses = iter(
+                    [
+                        {
+                            "resources": [
+                                {
+                                    "device_id": "d12345678",
+                                    "alias": "Legacy-Laptop",
+                                    "online_state": "Online",
+                                }
+                            ]
+                        },
+                        {
+                            "resources": [
+                                {
+                                    "id": "550e8400-e29b-41d4-a716-446655440000",
+                                    "name": "Managed-Laptop",
+                                    "teamviewerId": 123456789,
+                                    "isOnline": True,
+                                }
+                            ]
+                        },
+                    ]
+                )
+
+            async def call_tool(self, name, **arguments):
+                self.calls.append((name, arguments))
+                return [SimpleNamespace(text=json.dumps(next(self.responses)))]
+
+        fake_agent = _FakeAgent()
+        mcp = FakeMCP()
+        runtime = AgentRuntime(fake_agent, {}, teamviewer=mcp)
+
+        result = await run_turn(
+            runtime,
+            object(),
+            "List the online TeamViewer devices.",
+            self.settings,
+        )
+
+        self.assertEqual(fake_agent.calls, [])
+        self.assertEqual(
+            mcp.calls,
+            [
+                ("tv_list_devices", {"online_state": "Online"}),
+                ("tv_list_company_managed_devices", {}),
+            ],
+        )
+        self.assertIn("Legacy Computers & Contacts devices: 1", result)
+        self.assertIn("Legacy-Laptop", result)
+        self.assertIn("Company-managed devices: 1", result)
+        self.assertIn("Managed-Laptop", result)
+
     def test_raw_foundry_tool_call_marker_is_not_shown_to_the_operator(self) -> None:
         text = (
             '<|tool_call|>[{"name":"tv_get_account","parameters":{}}]'

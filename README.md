@@ -71,6 +71,11 @@ The `tv_list_devices` read adapter intentionally hides the upstream optional `fu
 This prevents local models from adding an unrequested deleted-device filter while preserving the
 official MCP tool name and the supported group-ID and online/offline filters.
 
+An unqualified request such as `List the online TeamViewer devices` uses a deterministic host
+workflow over both `tv_list_devices` and `tv_list_company_managed_devices`. Results are presented
+in separate legacy and company-managed sections. Say `legacy devices` or `company-managed devices`
+when only one official inventory namespace is wanted.
+
 ## Prerequisites
 
 This guide assumes Windows 10 or 11 and PowerShell.

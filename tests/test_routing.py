@@ -143,6 +143,7 @@ class RoutingTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.assert_tool(prompt, expected)
         self.assert_host("Show the devices in SupportGroup.", "group_devices")
+        self.assert_host("List the online TeamViewer devices.", "all_devices")
 
     def test_explicit_allowed_tool_is_supported(self) -> None:
         self.assert_tool("Use only tv_get_account.", "tv_get_account")
@@ -199,6 +200,8 @@ class RoutingTests(unittest.TestCase):
 
         group_route = route_prompt("Show the devices in SupportGroup.")
         self.assertEqual(dict(group_route.arguments), {"group_name": "SupportGroup"})
+        all_route = route_prompt("List the online TeamViewer devices.")
+        self.assertEqual(dict(all_route.arguments), {"online_state": "Online"})
 
     def test_multiple_state_changes_require_clarification(self) -> None:
         route = route_prompt(

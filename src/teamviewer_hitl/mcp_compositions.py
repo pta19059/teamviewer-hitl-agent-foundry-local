@@ -99,6 +99,38 @@ async def _list_company_managed_devices(teamviewer: Any) -> list[dict[str, Any]]
     raise TeamViewerMCPReadError("Managed-device pagination exceeded the safety limit")
 
 
+async def list_devices_across_namespaces(
+    teamviewer: Any, online_state: str | None = None
+) -> dict[str, Any]:
+    """List legacy and company-managed devices through official MCP tools only."""
+    if online_state not in {None, "Online", "Offline"}:
+        raise TeamViewerMCPReadError("Availability must be Online or Offline")
+
+    legacy_arguments = {"online_state": online_state} if online_state else {}
+    legacy_payload = _decode_mcp_json(
+        await teamviewer.call_tool("tv_list_devices", **legacy_arguments),
+        "tv_list_devices",
+    )
+    legacy_devices = _collection(
+        legacy_payload, "tv_list_devices", "devices", "resources"
+    )
+
+    managed_devices = await _list_company_managed_devices(teamviewer)
+    if online_state is not None:
+        expected = online_state == "Online"
+        managed_devices = [
+            device for device in managed_devices if device.get("isOnline") is expected
+        ]
+
+    return {
+        "status": "ok",
+        "route": "TeamViewer MCP only",
+        "onlineState": online_state,
+        "legacyDevices": legacy_devices,
+        "managedDevices": managed_devices,
+    }
+
+
 async def _managed_group_result(teamviewer: Any, group: dict[str, Any]) -> dict[str, Any]:
     group_id = str(group.get("id", ""))
     if not group_id:

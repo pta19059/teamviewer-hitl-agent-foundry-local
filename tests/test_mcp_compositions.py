@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from teamviewer_hitl.mcp_compositions import (
     TeamViewerMCPReadError,
+    list_devices_across_namespaces,
     list_devices_in_group,
     list_devices_in_managed_group,
 )
@@ -174,6 +175,33 @@ class TeamViewerGroupResolverMCPTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             mcp.calls,
             [("tv_list_device_groups", {}), ("tv_list_managed_groups", {})],
+        )
+
+
+class TeamViewerCrossNamespaceInventoryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_online_inventory_reads_both_official_namespaces(self) -> None:
+        mcp = _FakeMCP(
+            [
+                {"resources": [{"device_id": "d1", "online_state": "Online"}]},
+                {
+                    "resources": [
+                        {"id": "m1", "isOnline": True},
+                        {"id": "m2", "isOnline": False},
+                    ]
+                },
+            ]
+        )
+
+        result = await list_devices_across_namespaces(mcp, "Online")
+
+        self.assertEqual(len(result["legacyDevices"]), 1)
+        self.assertEqual([item["id"] for item in result["managedDevices"]], ["m1"])
+        self.assertEqual(
+            mcp.calls,
+            [
+                ("tv_list_devices", {"online_state": "Online"}),
+                ("tv_list_company_managed_devices", {}),
+            ],
         )
 
 
