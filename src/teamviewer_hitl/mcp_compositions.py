@@ -36,6 +36,19 @@ def _resources(payload: dict[str, Any], tool_name: str) -> list[dict[str, Any]]:
     return [resource for resource in resources if isinstance(resource, dict)]
 
 
+def _collection(
+    payload: dict[str, Any], tool_name: str, *keys: str
+) -> list[dict[str, Any]]:
+    for key in keys:
+        values = payload.get(key)
+        if isinstance(values, list):
+            return [value for value in values if isinstance(value, dict)]
+    expected = ", ".join(keys)
+    raise TeamViewerMCPReadError(
+        f"{tool_name} did not return any expected collection ({expected})"
+    )
+
+
 async def _list_managed_groups(teamviewer: Any) -> list[dict[str, Any]]:
     page_size = 100
     groups: list[dict[str, Any]] = []
@@ -60,6 +73,14 @@ async def _list_managed_groups(teamviewer: Any) -> list[dict[str, Any]]:
             return groups
 
     raise TeamViewerMCPReadError("Managed-group pagination exceeded the safety limit")
+
+
+async def _list_legacy_groups(teamviewer: Any) -> list[dict[str, Any]]:
+    payload = _decode_mcp_json(
+        await teamviewer.call_tool("tv_list_device_groups"),
+        "tv_list_device_groups",
+    )
+    return _collection(payload, "tv_list_device_groups", "groups", "resources")
 
 
 async def _list_company_managed_devices(teamviewer: Any) -> list[dict[str, Any]]:
@@ -88,37 +109,7 @@ async def _list_company_managed_devices(teamviewer: Any) -> list[dict[str, Any]]
     raise TeamViewerMCPReadError("Managed-device pagination exceeded the safety limit")
 
 
-async def list_devices_in_managed_group(
-    teamviewer: Any, group_name: str
-) -> dict[str, Any]:
-    """Return exact managed-group membership using only TeamViewer MCP tool calls."""
-    requested_name = group_name.strip()
-    if not requested_name:
-        raise TeamViewerMCPReadError("Managed group name cannot be empty")
-
-    groups = await _list_managed_groups(teamviewer)
-    matches = [
-        group
-        for group in groups
-        if str(group.get("name", "")).casefold() == requested_name.casefold()
-    ]
-    if not matches:
-        return {
-            "status": "not_found",
-            "requestedGroupName": requested_name,
-            "message": "No managed group matched the requested name exactly.",
-        }
-    if len(matches) > 1:
-        return {
-            "status": "ambiguous",
-            "requestedGroupName": requested_name,
-            "matches": [
-                {"id": group.get("id"), "name": group.get("name")} for group in matches
-            ],
-            "message": "More than one managed group has the requested name.",
-        }
-
-    group = matches[0]
+async def _managed_group_result(teamviewer: Any, group: dict[str, Any]) -> dict[str, Any]:
     group_id = str(group.get("id", ""))
     if not group_id:
         raise TeamViewerMCPReadError("TeamViewer MCP returned a managed group without an ID")
@@ -162,4 +153,111 @@ async def list_devices_in_managed_group(
             "value may be shown as Sleeping or Offline in the TeamViewer UI."
         ),
         "devices": selected_devices,
+    }
+
+
+async def list_devices_in_managed_group(
+    teamviewer: Any, group_name: str
+) -> dict[str, Any]:
+    """Return exact managed-group membership using only TeamViewer MCP tool calls."""
+    requested_name = group_name.strip()
+    if not requested_name:
+        raise TeamViewerMCPReadError("Managed group name cannot be empty")
+
+    matches = [
+        group
+        for group in await _list_managed_groups(teamviewer)
+        if str(group.get("name", "")).casefold() == requested_name.casefold()
+    ]
+    if not matches:
+        return {
+            "status": "not_found",
+            "requestedGroupName": requested_name,
+            "message": "No managed group matched the requested name exactly.",
+        }
+    if len(matches) > 1:
+        return {
+            "status": "ambiguous",
+            "requestedGroupName": requested_name,
+            "matches": [
+                {"id": group.get("id"), "name": group.get("name")} for group in matches
+            ],
+            "message": "More than one managed group has the requested name.",
+        }
+    return await _managed_group_result(teamviewer, matches[0])
+
+
+async def list_devices_in_group(
+    teamviewer: Any,
+    group_name: str,
+    group_namespace: str | None = None,
+) -> dict[str, Any]:
+    """Resolve a legacy or managed group exactly, then list membership through MCP."""
+    requested_name = group_name.strip()
+    namespace = group_namespace.strip().casefold() if group_namespace else None
+    if not requested_name:
+        raise TeamViewerMCPReadError("Group name cannot be empty")
+    if namespace not in {None, "legacy", "managed"}:
+        raise TeamViewerMCPReadError("Group namespace must be legacy or managed")
+
+    matches: list[tuple[str, dict[str, Any]]] = []
+    if namespace in {None, "legacy"}:
+        matches.extend(
+            ("legacy", group)
+            for group in await _list_legacy_groups(teamviewer)
+            if str(group.get("name", "")).casefold() == requested_name.casefold()
+        )
+    if namespace in {None, "managed"}:
+        matches.extend(
+            ("managed", group)
+            for group in await _list_managed_groups(teamviewer)
+            if str(group.get("name", "")).casefold() == requested_name.casefold()
+        )
+
+    if not matches:
+        return {
+            "status": "not_found",
+            "requestedGroupName": requested_name,
+            "requestedNamespace": namespace,
+            "message": "No TeamViewer group matched the requested name exactly.",
+        }
+    if len(matches) > 1:
+        return {
+            "status": "ambiguous",
+            "requestedGroupName": requested_name,
+            "matches": [
+                {
+                    "namespace": item_namespace,
+                    "id": group.get("id"),
+                    "name": group.get("name"),
+                }
+                for item_namespace, group in matches
+            ],
+            "message": (
+                "More than one legacy or managed group has the requested name. "
+                "Specify the group namespace."
+            ),
+        }
+
+    selected_namespace, group = matches[0]
+    if selected_namespace == "managed":
+        result = await _managed_group_result(teamviewer, group)
+        result["groupNamespace"] = "managed"
+        return result
+
+    group_id = str(group.get("id", ""))
+    if not group_id:
+        raise TeamViewerMCPReadError("TeamViewer MCP returned a legacy group without an ID")
+    payload = _decode_mcp_json(
+        await teamviewer.call_tool("tv_list_devices", groupid=group_id),
+        "tv_list_devices",
+    )
+    devices = _collection(payload, "tv_list_devices", "devices", "resources")
+    return {
+        "status": "ok",
+        "route": "TeamViewer MCP only",
+        "groupNamespace": "legacy",
+        "group": {"id": group_id, "name": group.get("name")},
+        "deviceCount": len(devices),
+        "devices": devices,
     }

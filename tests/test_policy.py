@@ -6,6 +6,7 @@ from teamviewer_hitl.policy import (
     MCP_COMPOSITE_READ_ONLY_TOOLS,
     MCP_APPROVAL_MODE,
     READ_ONLY_TOOLS,
+    UNSAFE_DISABLED_TOOLS,
     validate_policy,
 )
 
@@ -25,14 +26,26 @@ class PolicyTests(unittest.TestCase):
         self.assertIn("tv_create_session", APPROVAL_REQUIRED_TOOLS)
         self.assertNotIn("tv_create_session", READ_ONLY_TOOLS)
 
-    def test_managed_group_composition_is_mcp_only_and_read_only(self) -> None:
-        name = "tv_list_devices_in_managed_group"
+    def test_underspecified_policy_assignment_tools_are_disabled(self) -> None:
+        self.assertEqual(
+            UNSAFE_DISABLED_TOOLS,
+            {
+                "tv_assign_monitoring_policy",
+                "tv_assign_patch_management_policy",
+            },
+        )
+        self.assertTrue(UNSAFE_DISABLED_TOOLS.isdisjoint(ALLOWED_TOOLS))
+
+    def test_group_composition_is_mcp_only_and_read_only(self) -> None:
+        name = "tv_list_devices_in_group"
         self.assertIn(name, MCP_COMPOSITE_READ_ONLY_TOOLS)
         self.assertIn(name, READ_ONLY_TOOLS)
         self.assertNotIn(name, ALLOWED_TOOLS)
         self.assertIn("tv_list_managed_groups", ALLOWED_TOOLS)
         self.assertIn("tv_list_company_managed_devices", ALLOWED_TOOLS)
         self.assertIn("tv_get_managed_device_groups", ALLOWED_TOOLS)
+        self.assertIn("tv_list_device_groups", ALLOWED_TOOLS)
+        self.assertIn("tv_list_devices", ALLOWED_TOOLS)
 
     def test_high_risk_admin_tools_are_not_exposed(self) -> None:
         forbidden = {

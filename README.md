@@ -11,18 +11,23 @@ the primary setup documented below.
 ## What this project does
 
 - Reads TeamViewer account, device, group, monitoring, session, report, and event-log data.
-- Uses a local `phi-4-mini` model through Foundry Local for prompt processing and tool selection.
+- Uses a local `phi-4-mini` model through Foundry Local for response generation and exact
+  argument preparation.
 - Connects to TeamViewer's official MCP server over local stdio.
-- Adds one narrow read-only managed-group composition built exclusively from official TeamViewer
-  MCP tools.
+- Routes each prompt deterministically before the model runs and exposes at most one operation.
+- Adds one read-only legacy/managed group resolver built exclusively from official TeamViewer MCP
+  tools.
 - Requires a fresh human decision before every allowed state-changing MCP call.
+- Validates argument shape, exact identifier provenance, and mutable values before approval and
+  again before execution.
 - Records approvals and rejections in `.audit/teamviewer-approvals.jsonl`.
 - Hides high-risk TeamViewer administration tools from the model entirely.
 
-The current policy exposes 32 of the TeamViewer MCP server's tools plus one application-level
-read-only composition that calls only those MCP tools. Operations such as account creation, user
-deletion, TFA deactivation, permanent-token management, device deletion, and policy deletion are
-not available to the agent.
+The upstream MCP connection allows 30 TeamViewer operations: 24 reads and 6 writes. The model never
+sees all of them together. It receives no tool for conversation, or exactly one route-selected
+tool for an operational request. The six application-level write wrappers have strict schemas and
+call only their identically named official MCP operations. Policy assignment is temporarily
+disabled because the current upstream `assignments` schema is not sufficiently typed.
 
 ## Architecture and approval boundary
 
@@ -30,25 +35,34 @@ not available to the agent.
 Operator prompt
     |
     v
-Microsoft Agent Framework agent
-    |
-    v
-TeamViewer MCP allow-list
-    |-- read-only tool -----------> execute and return evidence
-    |
-    `-- state-changing tool ------> display exact call
-                                      |
-                                      `-- APPROVE -> execute
-                                          anything else -> reject
+Deterministic host router
+    |-- conversation -------------> model with zero tools
+    |-- unclear/unsupported ------> deterministic clarification; zero TeamViewer operations
+    |-- one read -----------------> expose exactly one read tool
+    |                                -> strict argument/provenance guard
+    |                                -> official TeamViewer MCP server
+    `-- one write ----------------> expose exactly one typed write wrapper
+                                     -> validate exact proposed call
+                                     -> display tool + arguments
+                                         |-- APPROVE -> validate again -> MCP
+                                         `-- anything else -> reject
 
-Managed-group query -------------> exact group-name resolution via TeamViewer MCP
-                                    -> company devices via TeamViewer MCP
-                                    -> device group membership via TeamViewer MCP
-                                    -> return verified membership
+Named-group read ----------------> resolve legacy + managed namespaces through MCP
+                                    -> reject no-match or ambiguity
+                                    -> return only verified membership
 ```
 
 This approval gate supplements TeamViewer token scopes; it does not replace them. Keep the
 TeamViewer token narrowly scoped and review the allow-list with `--show-policy`.
+
+### MCP-only TeamViewer boundary
+
+Every account, device, group, monitoring, report, and session operation crosses the configured
+official TeamViewer MCP transport. The Python host contains no TeamViewer Web API URL and no direct
+HTTP client for TeamViewer. Typed write wrappers call `teamviewer.call_tool` with the same official
+MCP tool name; the group resolver composes read-only `teamviewer.call_tool` calls. Ordinary
+conversation can still initialize the MCP connection at application startup, but it performs no
+TeamViewer data operation and exposes no tool to the model.
 
 ## Prerequisites
 
@@ -97,18 +111,27 @@ Set-Location .\teamviewer-hitl-agent-foundry-local
 
 ```powershell
 py -m venv .venv
-.\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
-This creates the local command:
+If PowerShell blocks the activation script, allow it only for the current shell and retry:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\.venv\Scripts\Activate.ps1
+```
+
+Activation puts the environment's executable directory on `PATH`, so every command below can use:
 
 ```text
-.venv\Scripts\teamviewer-hitl.exe
+teamviewer-hitl
 ```
 
-It is the console entry point for the Python distribution `teamviewer-hitl-agent` and calls
-`teamviewer_hitl.cli:main`.
+`teamviewer-hitl.exe` is generated by the Python distribution `teamviewer-hitl-agent`; it is not a
+TeamViewer binary or a package of its own. It calls `teamviewer_hitl.cli:main`. In each new
+PowerShell window, activate `.venv` once before using the bare command.
 
 ### 3. Download and build TeamViewer's official MCP server
 
@@ -118,12 +141,16 @@ repository.
 ```powershell
 New-Item -ItemType Directory -Force external | Out-Null
 git clone https://github.com/teamviewer/TV_Remote_MCP.git external\TV_Remote_MCP
+git -C external\TV_Remote_MCP checkout 7039b9c2e9ea26c2bfb50cd7580c89f9fb3da517
 cmd /c npm install --prefix external\TV_Remote_MCP
 cmd /c npm run build --prefix external\TV_Remote_MCP
 Test-Path external\TV_Remote_MCP\dist\index.js
 ```
 
 The final command must return `True`.
+
+The checkout pins the official server revision used to validate this application's tool names and
+schemas. Review schema changes and rerun the complete test suite before moving that pin.
 
 If the MCP repository already exists but is not built, run only:
 
@@ -240,13 +267,13 @@ Invoke-RestMethod -Uri "http://127.0.0.1:62911/v1/models" -Method Get
 Display the exact read-only and approval-required tool policy:
 
 ```powershell
-.\.venv\Scripts\teamviewer-hitl.exe --show-policy
+teamviewer-hitl --show-policy
 ```
 
 Run the automated tests:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
 
 The tests do not call TeamViewer or Microsoft Foundry cloud services.
@@ -259,28 +286,26 @@ Start with one TeamViewer operation per prompt. This is especially reliable with
 Test account access:
 
 ```powershell
-.\.venv\Scripts\teamviewer-hitl.exe "Use only tv_get_account and show my TeamViewer account summary."
+teamviewer-hitl "Show my TeamViewer account summary."
 ```
 
 Test the online device list:
 
 ```powershell
-.\.venv\Scripts\teamviewer-hitl.exe "Use only tv_list_devices with online_state Online and list the online TeamViewer devices."
+teamviewer-hitl "List the online TeamViewer devices."
 ```
 
-Test a newer managed device group by exact name:
+Test a group by exact name. The resolver checks both legacy Computers & Contacts groups and managed
+groups through MCP, and stops if the name is ambiguous:
 
 ```powershell
-.\.venv\Scripts\teamviewer-hitl.exe "Use tv_list_devices_in_managed_group to show the devices in StefanoGroup."
+teamviewer-hitl "Show the devices in StefanoGroup."
 ```
-
-Do not use `tv_list_devices` for a group displayed in TeamViewer's newer managed-device hierarchy.
-That tool reads the separate legacy Computers & Contacts inventory.
 
 Run an interactive session:
 
 ```powershell
-.\.venv\Scripts\teamviewer-hitl.exe
+teamviewer-hitl
 ```
 
 Type `exit` or `quit` to stop the interactive session.
@@ -290,7 +315,7 @@ Type `exit` or `quit` to stop the interactive session.
 Use a test target that you are authorized to operate:
 
 ```powershell
-.\.venv\Scripts\teamviewer-hitl.exe "Create a TeamViewer support session named HITL-Test."
+teamviewer-hitl "Create a TeamViewer support session with description HITL-Test."
 ```
 
 Before the MCP call executes, the application displays:
@@ -306,6 +331,11 @@ Type APPROVE to execute this exact call. Any other response rejects it.
 For a rejection-path test, type anything other than `APPROVE`. For an execution test, verify the
 target and arguments carefully and then type exactly `APPROVE`.
 
+The host pins every supported operational prompt to one exact tool, for both Foundry Local and the
+cloud provider. The model cannot substitute a group lookup, monitoring call, or any other tool.
+For a write, the host also binds the approved tool name and canonical arguments to the continuation;
+any post-approval change is blocked before MCP execution.
+
 Approval decisions are appended to:
 
 ```text
@@ -319,23 +349,63 @@ succeeded. The agent reports tool success only when the MCP call itself returns 
 
 ```powershell
 # Help
-.\.venv\Scripts\teamviewer-hitl.exe --help
+teamviewer-hitl --help
 
 # Show the security policy without credentials
-.\.venv\Scripts\teamviewer-hitl.exe --show-policy
+teamviewer-hitl --show-policy
 
 # One-shot request
-.\.venv\Scripts\teamviewer-hitl.exe "Use only tv_get_account and summarize the account."
+teamviewer-hitl "Show my TeamViewer account summary."
 
 # Interactive mode
-.\.venv\Scripts\teamviewer-hitl.exe
+teamviewer-hitl
 
 # Run the module without the generated console executable
-.\.venv\Scripts\python.exe -m teamviewer_hitl.cli
+python -m teamviewer_hitl.cli
 
 # Run tests
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 ```
+
+## Supported prompt examples
+
+These examples are intentionally explicit. Submit one operation at a time.
+
+```powershell
+# No TeamViewer call
+teamviewer-hitl "Hello"
+
+# Read-only MCP calls
+teamviewer-hitl "Show my TeamViewer account summary."
+teamviewer-hitl "List the online TeamViewer devices."
+teamviewer-hitl "Show the devices in StefanoGroup."
+teamviewer-hitl "List all TeamViewer sessions."
+teamviewer-hitl "Get TeamViewer session code s123."
+teamviewer-hitl "Get device ID d1234567890."
+teamviewer-hitl "Get connection report ID c123."
+teamviewer-hitl "Show event logs from 2026-08-19T00:00:00Z to 2026-08-20T00:00:00Z."
+
+# Writes: each stops for exact APPROVE input
+teamviewer-hitl "Create a TeamViewer support session with description HITL-Test."
+teamviewer-hitl "Update TeamViewer session code s123 notes to Customer confirmed."
+teamviewer-hitl "Close TeamViewer session code s123."
+teamviewer-hitl "Set the description of managed device ID 550e8400-e29b-41d4-a716-446655440000 to Lobby kiosk."
+teamviewer-hitl "Activate monitoring on TeamViewer ID 987654321."
+teamviewer-hitl "Update connection report ID c123 notes to Reviewed."
+```
+
+For a targeted read or write, label the identifier explicitly as `session code`, `device ID`,
+`connection report ID`, `group ID`, or `TeamViewer ID`. The value must match exactly; a device or
+session name is never silently treated as an ID. If you know only a name, run a read/list command
+first, then submit a second command containing the returned identifier. Relative dates such as
+`yesterday` are not converted by the model; supply an explicit ISO 8601 range.
+
+The following operations are deliberately unavailable:
+
+- Monitoring-policy and patch-policy assignment, until the official MCP assignment payload is
+  fully typed.
+- Any write not listed above, including deleting devices, groups, reports, users, or policies.
+- Multiple state changes in one prompt.
 
 ## Troubleshooting
 
@@ -406,22 +476,25 @@ entries**. Create a replacement script token with the missing scope and update `
 
 ### The local model describes a tool but does not call it
 
-This project requires the first tool selection for Foundry Local so that `phi-4-mini` emits a
-structured call instead of merely describing one. Keep prompts explicit and request one operation
-at a time for the most predictable local-model behavior.
+The host requires the exact routed function name and verifies that its invocation middleware ran.
+If the provider returns prose without executing the required MCP read, the host discards that prose
+and reports that no live data is available. Keep prompts explicit and request one operation at a
+time. Run the test suite if this behavior regresses.
 
 ### A named group returns unrelated devices
 
 TeamViewer has two separate inventory models:
 
 - `tv_list_device_groups` and `tv_list_devices` read legacy Computers & Contacts groups.
-- `tv_list_devices_in_managed_group` resolves the newer managed group and verifies membership by
-  composing the official `tv_list_managed_groups`, `tv_list_company_managed_devices`, and
-  `tv_get_managed_device_groups` MCP tools.
+- `tv_list_devices_in_group` is the application-level resolver. It searches both namespaces using
+  the official MCP server, matches the name exactly, and rejects ambiguity. For a managed group it
+  verifies membership by composing `tv_list_managed_groups`,
+  `tv_list_company_managed_devices`, and `tv_get_managed_device_groups`. For a legacy group it
+  composes `tv_list_device_groups` and `tv_list_devices`.
 
-For a group shown in the modern managed-device hierarchy, use the managed-group composition. It
-matches the group name exactly, rejects ambiguous names, follows pagination, and returns only the
-membership supplied by TeamViewer.
+The resolver follows managed pagination and returns only membership supplied by TeamViewer MCP.
+If the same exact name exists in both namespaces, rename one group or query it by an explicit ID;
+the application will not guess.
 
 ## Cloud Microsoft Foundry option
 
@@ -437,7 +510,7 @@ Authenticate before running the agent:
 
 ```powershell
 az login
-.\.venv\Scripts\teamviewer-hitl.exe
+teamviewer-hitl
 ```
 
 The local TeamViewer MCP and HITL policy remain the same. Only model inference moves to the cloud
@@ -456,7 +529,7 @@ TEAMVIEWER_MCP_BEARER_TOKEN=YOUR_MCP_SERVER_BEARER_TOKEN
 Use HTTPS outside localhost. `TEAMVIEWER_MCP_BEARER_TOKEN` protects access to your MCP server; it
 is separate from the TeamViewer API token used by that server.
 
-The `tv_list_devices_in_managed_group` composition works with both local stdio and remote HTTP MCP
+The `tv_list_devices_in_group` composition works with both local stdio and remote HTTP MCP
 transports. It never calls TeamViewer Web API directly from Python; every TeamViewer request crosses
 the configured MCP transport.
 
@@ -486,6 +559,7 @@ model and execution-provider downloads.
 - [Microsoft Agent Framework overview](https://learn.microsoft.com/en-us/agent-framework/overview/)
 - [Microsoft Agent Framework local MCP tools](https://learn.microsoft.com/en-us/agent-framework/agents/tools/local-mcp-tools)
 - [Microsoft Agent Framework tool approval](https://learn.microsoft.com/en-us/agent-framework/agents/tools/tool-approval)
+- [Microsoft Agent Framework tool availability controls](https://learn.microsoft.com/en-us/agent-framework/agents/tools/controlling-tool-availability)
 - [Microsoft Agent Framework Human-in-the-Loop workflows](https://learn.microsoft.com/en-us/agent-framework/workflows/human-in-the-loop)
 - [Microsoft Foundry Local CLI](https://learn.microsoft.com/en-us/azure/foundry-local/reference/reference-cli)
 - [TeamViewer MCP interface](https://www.teamviewer.com/en/global/support/knowledge-base/teamviewer-remote/teamviewer-ai/teamviewer-mcp-interface/)

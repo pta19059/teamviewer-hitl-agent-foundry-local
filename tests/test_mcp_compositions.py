@@ -2,7 +2,10 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from teamviewer_hitl.mcp_compositions import list_devices_in_managed_group
+from teamviewer_hitl.mcp_compositions import (
+    list_devices_in_group,
+    list_devices_in_managed_group,
+)
 
 
 class _FakeMCP:
@@ -105,6 +108,56 @@ class TeamViewerManagedGroupMCPTests(unittest.IsolatedAsyncioTestCase):
             mcp.calls[2],
             ("tv_list_company_managed_devices", {"pagination_token": "next-page"}),
         )
+
+
+class TeamViewerGroupResolverMCPTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unique_legacy_group_is_resolved_and_listed_via_mcp(self) -> None:
+        mcp = _FakeMCP(
+            [
+                {"resources": [{"id": "g-finance", "name": "Finance"}]},
+                {"resources": []},
+                {
+                    "resources": [
+                        {
+                            "device_id": "d1",
+                            "alias": "Finance-Laptop",
+                            "online_state": "Online",
+                        }
+                    ]
+                },
+            ]
+        )
+
+        result = await list_devices_in_group(mcp, "Finance")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["groupNamespace"], "legacy")
+        self.assertEqual(result["deviceCount"], 1)
+        self.assertEqual(
+            mcp.calls,
+            [
+                ("tv_list_device_groups", {}),
+                ("tv_list_managed_groups", {"limit": 100, "offset": 0}),
+                ("tv_list_devices", {"groupid": "g-finance"}),
+            ],
+        )
+
+    async def test_same_name_across_namespaces_is_reported_as_ambiguous(self) -> None:
+        mcp = _FakeMCP(
+            [
+                {"resources": [{"id": "g1", "name": "Operations"}]},
+                {"resources": [{"id": "g2", "name": "Operations"}]},
+            ]
+        )
+
+        result = await list_devices_in_group(mcp, "Operations")
+
+        self.assertEqual(result["status"], "ambiguous")
+        self.assertEqual(
+            {match["namespace"] for match in result["matches"]},
+            {"legacy", "managed"},
+        )
+        self.assertEqual(len(mcp.calls), 2)
 
 
 if __name__ == "__main__":

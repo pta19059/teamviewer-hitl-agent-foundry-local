@@ -8,7 +8,7 @@ import sys
 
 from .agent import open_agent, run_turn
 from .config import ConfigurationError, Settings
-from .policy import APPROVAL_REQUIRED_TOOLS, READ_ONLY_TOOLS
+from .policy import APPROVAL_REQUIRED_TOOLS, READ_ONLY_TOOLS, UNSAFE_DISABLED_TOOLS
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -27,14 +27,17 @@ def _print_policy() -> None:
     print("\nState-changing (explicit approval for every call):")
     for name in sorted(APPROVAL_REQUIRED_TOOLS):
         print(f"  {name}")
+    print("\nDisabled pending a safe upstream schema:")
+    for name in sorted(UNSAFE_DISABLED_TOOLS):
+        print(f"  {name}")
 
 
 async def _run(initial_prompt: str | None) -> None:
     settings = Settings.from_env()
-    async with open_agent(settings) as agent:
-        session = agent.create_session()
+    async with open_agent(settings) as runtime:
+        session = runtime.agent.create_session()
         if initial_prompt:
-            print(await run_turn(agent, session, initial_prompt, settings))
+            print(await run_turn(runtime, session, initial_prompt, settings))
             return
 
         print("TeamViewer HITL assistant. Type 'exit' to quit.")
@@ -44,7 +47,7 @@ async def _run(initial_prompt: str | None) -> None:
                 return
             if not prompt:
                 continue
-            print(f"\nAgent: {await run_turn(agent, session, prompt, settings)}")
+            print(f"\nAgent: {await run_turn(runtime, session, prompt, settings)}")
 
 
 def main() -> None:

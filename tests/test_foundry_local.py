@@ -29,6 +29,22 @@ class FoundryLocalEndpointTests(unittest.TestCase):
         )
         self.assertEqual(discover_foundry_local_endpoint(), "http://127.0.0.1:60000/v1")
 
+    @patch("teamviewer_hitl.agent.subprocess.run")
+    def test_accepts_advertised_url_when_cli_running_flag_is_stale(self, run) -> None:
+        run.return_value = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "running": False,
+                    "state": "not_running",
+                    "webUrls": ["http://127.0.0.1:62911"],
+                }
+            ),
+            stderr="",
+        )
+        self.assertEqual(discover_foundry_local_endpoint(), "http://127.0.0.1:62911/v1")
+
 
 if __name__ == "__main__":
     unittest.main()
