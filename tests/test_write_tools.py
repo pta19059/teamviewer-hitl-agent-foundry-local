@@ -34,9 +34,6 @@ class WriteToolTests(unittest.IsolatedAsyncioTestCase):
         await self.tools["tv_create_session"].func(
             description="Help Alice",
             groupid="g12345678",
-            tag="urgent",
-            end_customer_name="Alice",
-            end_customer_email="alice@example.com",
         )
         self.assertEqual(
             self.mcp.calls,
@@ -46,11 +43,6 @@ class WriteToolTests(unittest.IsolatedAsyncioTestCase):
                     {
                         "description": "Help Alice",
                         "groupid": "g12345678",
-                        "tag": "urgent",
-                        "end_customer": {
-                            "name": "Alice",
-                            "email": "alice@example.com",
-                        },
                     },
                 )
             ],
@@ -61,9 +53,21 @@ class WriteToolTests(unittest.IsolatedAsyncioTestCase):
             await self.tools["tv_create_session"].func(description="Help Alice")
         self.assertEqual(self.mcp.calls, [])
 
+    async def test_unsupported_session_metadata_cannot_reach_mcp(self) -> None:
+        with self.assertRaises(TypeError):
+            await self.tools["tv_create_session"].func(
+                description="Help Alice",
+                groupid="g12345678",
+                notes="must not cross",
+            )
+        self.assertEqual(self.mcp.calls, [])
+
     async def test_each_wrapper_dispatches_to_the_same_named_mcp_operation(self) -> None:
         cases = (
-            ("tv_update_session", {"session_code": "s123", "notes": "Reviewed"}),
+            (
+                "tv_update_session",
+                {"session_code": "s123", "description": "Escalated case"},
+            ),
             ("tv_delete_session", {"session_code": "s123"}),
             (
                 "tv_update_managed_device_description",
@@ -75,7 +79,10 @@ class WriteToolTests(unittest.IsolatedAsyncioTestCase):
             ("tv_activate_monitoring", {"teamviewer_id": 987654321}),
             (
                 "tv_update_connection_report",
-                {"connection_id": "c123", "notes": "Reviewed"},
+                {
+                    "connection_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "notes": "Reviewed",
+                },
             ),
         )
         for name, arguments in cases:
@@ -83,6 +90,11 @@ class WriteToolTests(unittest.IsolatedAsyncioTestCase):
                 self.mcp.calls.clear()
                 await self.tools[name].func(**arguments)
                 self.assertEqual(self.mcp.calls, [(name, arguments)])
+
+    async def test_session_update_cannot_dispatch_a_no_op(self) -> None:
+        with self.assertRaises(TypeError):
+            await self.tools["tv_update_session"].func(session_code="s123")
+        self.assertEqual(self.mcp.calls, [])
 
 
 if __name__ == "__main__":

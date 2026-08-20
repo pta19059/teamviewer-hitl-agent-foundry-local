@@ -3,6 +3,7 @@ import unittest
 from types import SimpleNamespace
 
 from teamviewer_hitl.mcp_compositions import (
+    TeamViewerMCPReadError,
     list_devices_in_group,
     list_devices_in_managed_group,
 )
@@ -24,13 +25,13 @@ class TeamViewerManagedGroupMCPTests(unittest.IsolatedAsyncioTestCase):
         group_id = "db89eed2-90df-403c-903c-94a1d765567a"
         mcp = _FakeMCP(
             [
-                {"resources": [{"id": group_id, "name": "StefanoGroup"}]},
+                {"resources": [{"id": group_id, "name": "SupportGroup"}]},
                 {
                     "resources": [
                         {
                             "id": "device-1",
-                            "teamviewerId": 765084609,
-                            "name": "2219400-STEFANO",
+                            "teamviewerId": 987654321,
+                            "name": "Support-Laptop",
                             "isOnline": True,
                         },
                         {
@@ -41,16 +42,16 @@ class TeamViewerManagedGroupMCPTests(unittest.IsolatedAsyncioTestCase):
                         },
                     ]
                 },
-                {"resources": [{"id": group_id, "name": "StefanoGroup"}]},
+                {"resources": [{"id": group_id, "name": "SupportGroup"}]},
                 {"resources": [{"id": "another-group", "name": "OtherGroup"}]},
             ]
         )
 
-        result = await list_devices_in_managed_group(mcp, "stefanogroup")
+        result = await list_devices_in_managed_group(mcp, "supportgroup")
 
         self.assertEqual(result["route"], "TeamViewer MCP only")
         self.assertEqual(result["deviceCount"], 1)
-        self.assertEqual(result["devices"][0]["name"], "2219400-STEFANO")
+        self.assertEqual(result["devices"][0]["name"], "Support-Laptop")
         self.assertEqual(
             [name for name, _ in mcp.calls],
             [
@@ -64,7 +65,7 @@ class TeamViewerManagedGroupMCPTests(unittest.IsolatedAsyncioTestCase):
     async def test_not_found_stops_after_managed_group_mcp_call(self) -> None:
         mcp = _FakeMCP([{"resources": [{"id": "other", "name": "OtherGroup"}]}])
 
-        result = await list_devices_in_managed_group(mcp, "StefanoGroup")
+        result = await list_devices_in_managed_group(mcp, "SupportGroup")
 
         self.assertEqual(result["status"], "not_found")
         self.assertEqual([name for name, _ in mcp.calls], ["tv_list_managed_groups"])
@@ -74,14 +75,14 @@ class TeamViewerManagedGroupMCPTests(unittest.IsolatedAsyncioTestCase):
             [
                 {
                     "resources": [
-                        {"id": "group-1", "name": "StefanoGroup"},
-                        {"id": "group-2", "name": "StefanoGroup"},
+                        {"id": "group-1", "name": "SupportGroup"},
+                        {"id": "group-2", "name": "SupportGroup"},
                     ]
                 }
             ]
         )
 
-        result = await list_devices_in_managed_group(mcp, "StefanoGroup")
+        result = await list_devices_in_managed_group(mcp, "SupportGroup")
 
         self.assertEqual(result["status"], "ambiguous")
         self.assertEqual(len(result["matches"]), 2)
@@ -90,7 +91,7 @@ class TeamViewerManagedGroupMCPTests(unittest.IsolatedAsyncioTestCase):
         group_id = "group-1"
         mcp = _FakeMCP(
             [
-                {"resources": [{"id": group_id, "name": "StefanoGroup"}]},
+                {"resources": [{"id": group_id, "name": "SupportGroup"}]},
                 {
                     "resources": [{"id": "device-1", "name": "One"}],
                     "nextPaginationToken": "next-page",
@@ -101,7 +102,7 @@ class TeamViewerManagedGroupMCPTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        result = await list_devices_in_managed_group(mcp, "StefanoGroup")
+        result = await list_devices_in_managed_group(mcp, "SupportGroup")
 
         self.assertEqual(result["deviceCount"], 2)
         self.assertEqual(
@@ -137,7 +138,7 @@ class TeamViewerGroupResolverMCPTests(unittest.IsolatedAsyncioTestCase):
             mcp.calls,
             [
                 ("tv_list_device_groups", {}),
-                ("tv_list_managed_groups", {"limit": 100, "offset": 0}),
+                ("tv_list_managed_groups", {}),
                 ("tv_list_devices", {"groupid": "g-finance"}),
             ],
         )
@@ -158,6 +159,22 @@ class TeamViewerGroupResolverMCPTests(unittest.IsolatedAsyncioTestCase):
             {"legacy", "managed"},
         )
         self.assertEqual(len(mcp.calls), 2)
+
+    async def test_managed_group_name_resolution_fails_on_incomplete_page(self) -> None:
+        mcp = _FakeMCP(
+            [
+                {"resources": []},
+                {"resources": [], "nextPaginationToken": "next-page"},
+            ]
+        )
+
+        with self.assertRaises(TeamViewerMCPReadError):
+            await list_devices_in_group(mcp, "Operations")
+
+        self.assertEqual(
+            mcp.calls,
+            [("tv_list_device_groups", {}), ("tv_list_managed_groups", {})],
+        )
 
 
 if __name__ == "__main__":

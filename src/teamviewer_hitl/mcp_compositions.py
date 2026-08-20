@@ -50,29 +50,19 @@ def _collection(
 
 
 async def _list_managed_groups(teamviewer: Any) -> list[dict[str, Any]]:
-    page_size = 100
-    groups: list[dict[str, Any]] = []
-    seen_ids: set[str] = set()
-
-    for offset in range(0, 10_000, page_size):
-        payload = _decode_mcp_json(
-            await teamviewer.call_tool(
-                "tv_list_managed_groups", limit=page_size, offset=offset
-            ),
-            "tv_list_managed_groups",
+    payload = _decode_mcp_json(
+        await teamviewer.call_tool("tv_list_managed_groups"),
+        "tv_list_managed_groups",
+    )
+    groups = _resources(payload, "tv_list_managed_groups")
+    if payload.get("nextPaginationToken"):
+        # The current official MCP handler advertises and sends limit/offset, while
+        # the TeamViewer API requires paginationToken. Returning a partial group set
+        # could resolve a name incorrectly, so stop until the upstream tool is fixed.
+        raise TeamViewerMCPReadError(
+            "The official MCP managed-group tool cannot retrieve the next API page"
         )
-        page = _resources(payload, "tv_list_managed_groups")
-        page_ids = {str(group.get("id")) for group in page}
-        if page and page_ids <= seen_ids:
-            raise TeamViewerMCPReadError(
-                "tv_list_managed_groups repeated a page instead of advancing pagination"
-            )
-        groups.extend(page)
-        seen_ids.update(page_ids)
-        if len(page) < page_size:
-            return groups
-
-    raise TeamViewerMCPReadError("Managed-group pagination exceeded the safety limit")
+    return groups
 
 
 async def _list_legacy_groups(teamviewer: Any) -> list[dict[str, Any]]:

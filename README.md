@@ -15,6 +15,7 @@ the primary setup documented below.
   argument preparation.
 - Connects to TeamViewer's official MCP server over local stdio.
 - Routes each prompt deterministically before the model runs and exposes at most one operation.
+- Uses typed MCP-only read adapters for API-compatible identifiers, filters, and pagination.
 - Adds one read-only legacy/managed group resolver built exclusively from official TeamViewer MCP
   tools.
 - Requires a fresh human decision before every allowed state-changing MCP call.
@@ -60,7 +61,8 @@ TeamViewer token narrowly scoped and review the allow-list with `--show-policy`.
 Every account, device, group, monitoring, report, and session operation crosses the configured
 official TeamViewer MCP transport. The Python host contains no TeamViewer Web API URL and no direct
 HTTP client for TeamViewer. Typed write wrappers call `teamviewer.call_tool` with the same official
-MCP tool name; the group resolver composes read-only `teamviewer.call_tool` calls. Ordinary
+MCP tool name; typed read adapters and the group resolver compose only read-only
+`teamviewer.call_tool` calls. Ordinary
 conversation can still initialize the MCP connection at application startup, but it performs no
 TeamViewer data operation and exposes no tool to the model.
 
@@ -299,7 +301,7 @@ Test a group by exact name. The resolver checks both legacy Computers & Contacts
 groups through MCP, and stops if the name is ambiguous:
 
 ```powershell
-teamviewer-hitl "Show the devices in StefanoGroup."
+teamviewer-hitl "Show the devices in SupportGroup."
 ```
 
 Run an interactive session:
@@ -389,21 +391,24 @@ teamviewer-hitl "Hello"
 # Read-only MCP calls
 teamviewer-hitl "Show my TeamViewer account summary."
 teamviewer-hitl "List the online TeamViewer devices."
-teamviewer-hitl "Show the devices in StefanoGroup."
+teamviewer-hitl "Show the devices in SupportGroup."
 teamviewer-hitl "List all device groups."
 teamviewer-hitl "List all TeamViewer sessions."
+teamviewer-hitl "List closed TeamViewer sessions."
 teamviewer-hitl "Get TeamViewer session code s123."
 teamviewer-hitl "Get device ID d1234567890."
-teamviewer-hitl "Get connection report ID c123."
+teamviewer-hitl "Show hardware for monitored device with TeamViewer ID 987654321."
+teamviewer-hitl "List all connection reports."
+teamviewer-hitl "Get connection report ID 550e8400-e29b-41d4-a716-446655440000."
 teamviewer-hitl "Show event logs from 2026-08-19T00:00:00Z to 2026-08-20T00:00:00Z."
 
 # Writes: each stops for exact APPROVE input
 teamviewer-hitl "Create a TeamViewer support session with description HITL-Test in group ID <GROUP_ID>."
-teamviewer-hitl "Update TeamViewer session code s123 notes to Customer confirmed."
+teamviewer-hitl "Update TeamViewer session code s123 with description Customer confirmed."
 teamviewer-hitl "Close TeamViewer session code s123."
 teamviewer-hitl "Set the description of managed device ID 550e8400-e29b-41d4-a716-446655440000 to Lobby kiosk."
 teamviewer-hitl "Activate monitoring on TeamViewer ID 987654321."
-teamviewer-hitl "Update connection report ID c123 notes to Reviewed."
+teamviewer-hitl "Update connection report ID 550e8400-e29b-41d4-a716-446655440000 with notes Reviewed."
 ```
 
 For a targeted read or write, label the identifier explicitly as `session code`, `device ID`,
@@ -418,10 +423,37 @@ TeamViewer namespace and cannot be used for a service case. Group-name creation 
 not exposed because a typo can create an unintended legacy group. A missing, malformed, or double
 group selector is rejected before the model, approval prompt, or MCP write runs.
 
+Session updates expose only `description`. Session `tag`, `notes`, `supporter_name`, and
+end-customer fields are not sent because they are advertised by the pinned MCP schema but are not
+accepted by the current TeamViewer session API contract. Monitoring activation accepts only one
+numeric TeamViewer ID; policy assignment remains disabled separately.
+
+### MCP contract compatibility and complete-result policy
+
+The pinned official MCP server and the current TeamViewer Web API do not agree on every parameter.
+This application corrects only the mismatches that can be handled while still sending every
+TeamViewer request through MCP:
+
+- Monitoring hardware, system, and software prompts require a numeric `TeamViewer ID`; the adapter
+  maps it to the official MCP tool's `device_id` field.
+- Connection-report and device-report lists follow the API's UUID `offset_id` cursor through a
+  narrow Agent Framework per-tool argument allow-list.
+- Managed-device lists and monitoring alarms follow their MCP pagination tokens automatically.
+- Online/offline and open/closed filters are host-bound to the exact filter stated in the prompt.
+
+The application never silently returns a known partial result. If a managed-group, event-log, or
+session-list response announces another page that the pinned MCP handler cannot request with the
+current API cursor, the read stops with an explicit compatibility error. Upgrade the pinned MCP
+revision only after reviewing its schemas and rerunning the full tests.
+
 The following operations are deliberately unavailable:
 
 - Monitoring-policy and patch-policy assignment, until the official MCP assignment payload is
   fully typed.
+- Session metadata updates other than `description`, and session-list filters other than one
+  `open` or `closed` state.
+- Filtered monitoring-alarm and report-list queries; request the complete list, then make a second
+  targeted request using an explicit identifier.
 - Any write not listed above, including deleting devices, groups, reports, users, or policies.
 - Multiple state changes in one prompt.
 

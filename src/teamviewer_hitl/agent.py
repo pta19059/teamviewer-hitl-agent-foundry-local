@@ -34,6 +34,7 @@ from .policy import (
     READ_ONLY_TOOLS,
     validate_policy,
 )
+from .read_tools import create_mcp_read_tools
 from .routing import IntentRoute, RouteOutcome, route_prompt
 from .validation import arguments_to_dict, validate_invocation
 from .write_tools import create_mcp_write_tools
@@ -59,6 +60,9 @@ that a device belongs to a group unless the tool result explicitly contains the 
 device list.
 Creating a support session requires exactly one explicit legacy Computers & Contacts group ID.
 Never substitute a managed-device group, and never omit or invent the create-session group ID.
+Session creation supports only description and group ID. Session updates support only description.
+Hardware, system, and software inventory tools use the monitored device's numeric TeamViewer ID.
+Connection-report IDs are UUIDs. Never substitute a short display ID or device ID.
 For managed-group availability, reproduce the tool's availability text exactly: the API cannot
 distinguish a Sleeping device from an Offline device when its isOnline value is false.
 When tv_list_devices_in_group returns status "ok", enumerate every device returned by the
@@ -72,6 +76,10 @@ _MCP_ADDITIONAL_TOOL_ARGUMENT_NAMES: Final[dict[str, tuple[str, ...]]] = {
     # but its advertised inputSchema omits it. Scope the framework exception to
     # this one remote tool so no unrelated model argument can cross MCP.
     "tv_create_session": ("groupid",),
+    # The report handlers forward arbitrary query arguments, but their schemas omit
+    # the current API's UUID pagination cursor.
+    "tv_list_connection_reports": ("offset_id",),
+    "tv_list_device_reports": ("offset_id",),
 }
 
 
@@ -461,6 +469,8 @@ async def open_agent(settings: Settings) -> AsyncIterator[AgentRuntime]:
                 for function in teamviewer.functions
                 if function.name in READ_ONLY_TOOLS
             }
+            for read_tool in create_mcp_read_tools(teamviewer):
+                registry[read_tool.name] = read_tool
             for write_tool in create_mcp_write_tools(teamviewer):
                 registry[write_tool.name] = write_tool
             group_tool = _create_group_device_tool(teamviewer)

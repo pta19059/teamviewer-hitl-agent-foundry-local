@@ -32,9 +32,9 @@ class ValidationTests(unittest.TestCase):
                 {"description": "HITL-Test", "groupid": "g12345678"},
             ),
             (
-                "Update TeamViewer session code s123 notes to Customer confirmed.",
+                "Update TeamViewer session code s123 with description Customer confirmed.",
                 "tv_update_session",
-                {"session_code": "s123", "notes": "Customer confirmed"},
+                {"session_code": "s123", "description": "Customer confirmed"},
             ),
             (
                 "Close TeamViewer session code s123.",
@@ -56,9 +56,13 @@ class ValidationTests(unittest.TestCase):
                 {"teamviewer_id": 987654321},
             ),
             (
-                "Update connection report ID c123 notes to Reviewed.",
+                "Update connection report ID 550e8400-e29b-41d4-a716-446655440000 "
+                "with notes Reviewed.",
                 "tv_update_connection_report",
-                {"connection_id": "c123", "notes": "Reviewed"},
+                {
+                    "connection_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "notes": "Reviewed",
+                },
             ),
         )
         for prompt, function_name, arguments in cases:
@@ -89,34 +93,37 @@ class ValidationTests(unittest.TestCase):
         self.assertIn("does not match", error or "")
 
     def test_model_invented_identifier_is_blocked(self) -> None:
-        route = route_prompt("Close the TeamViewer session.")
+        prompt = "Close TeamViewer session code s123."
+        route = route_prompt(prompt)
         error = validate_invocation(
             route,
-            "Close the TeamViewer session.",
+            prompt,
             "tv_delete_session",
-            {"session_code": "s123"},
+            {"session_code": "s999"},
         )
-        self.assertIn("explicit identifier label", error or "")
+        self.assertIn("does not match", error or "")
 
     def test_user_supplied_session_update_is_allowed(self) -> None:
-        prompt = "Update TeamViewer session code s123 notes to Customer confirmed."
+        prompt = (
+            "Update TeamViewer session code s123 with description Customer confirmed."
+        )
         route = route_prompt(prompt)
         self.assertIsNone(
             validate_invocation(
                 route,
                 prompt,
                 "tv_update_session",
-                {"session_code": "s123", "notes": "Customer confirmed"},
+                {"session_code": "s123", "description": "Customer confirmed"},
             )
         )
 
     def test_no_op_session_update_is_blocked(self) -> None:
-        prompt = "Update TeamViewer session code s123."
+        prompt = "Update TeamViewer session code s123 with description Escalated case."
         route = route_prompt(prompt)
         error = validate_invocation(
             route, prompt, "tv_update_session", {"session_code": "s123"}
         )
-        self.assertIn("at least one session field", error or "")
+        self.assertIn("Missing required argument(s): description", error or "")
 
     def test_empty_session_creation_is_blocked(self) -> None:
         prompt = (
@@ -143,7 +150,7 @@ class ValidationTests(unittest.TestCase):
                 "groupid": "g12345678",
             },
         )
-        self.assertIn("explicitly labelled session description", error or "")
+        self.assertIn("explicit request field", error or "")
 
     def test_create_session_description_cannot_reuse_group_id(self) -> None:
         prompt = (
@@ -156,7 +163,40 @@ class ValidationTests(unittest.TestCase):
             "tv_create_session",
             {"description": "g12345678", "groupid": "g12345678"},
         )
-        self.assertIn("explicitly labelled session description", error or "")
+        self.assertIn("explicit request field", error or "")
+
+    def test_write_values_cannot_be_reused_from_a_different_field(self) -> None:
+        cases = (
+            (
+                "Update TeamViewer session code s123 with description Customer confirmed.",
+                "tv_update_session",
+                {"session_code": "s123", "description": "s123"},
+            ),
+            (
+                "Set the description of managed device ID "
+                "550e8400-e29b-41d4-a716-446655440000 to Lobby kiosk.",
+                "tv_update_managed_device_description",
+                {
+                    "device_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "description": "550e8400-e29b-41d4-a716-446655440000",
+                },
+            ),
+            (
+                "Update connection report ID 550e8400-e29b-41d4-a716-446655440000 "
+                "with notes Reviewed.",
+                "tv_update_connection_report",
+                {
+                    "connection_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "notes": "550e8400-e29b-41d4-a716-446655440000",
+                },
+            ),
+        )
+        for prompt, function_name, arguments in cases:
+            with self.subTest(function_name=function_name):
+                error = validate_invocation(
+                    route_prompt(prompt), prompt, function_name, arguments
+                )
+                self.assertIn("explicit request field", error or "")
 
     def test_create_session_requires_group_argument_before_approval(self) -> None:
         prompt = (
@@ -184,7 +224,7 @@ class ValidationTests(unittest.TestCase):
             "tv_create_session",
             {"description": "HITL-Test", "groupid": "g87654321"},
         )
-        self.assertIn("explicit identifier label", invented or "")
+        self.assertIn("explicit request field", invented or "")
 
     def test_create_session_rejects_non_selector_value_later_in_prompt(self) -> None:
         prompt = (
@@ -199,13 +239,8 @@ class ValidationTests(unittest.TestCase):
     def test_invalid_managed_device_uuid_is_blocked(self) -> None:
         prompt = "Update managed device d1 description to Kiosk."
         route = route_prompt(prompt)
-        error = validate_invocation(
-            route,
-            prompt,
-            "tv_update_managed_device_description",
-            {"device_id": "d1", "description": "Kiosk"},
-        )
-        self.assertIn("explicit identifier label", error or "")
+        self.assertEqual(route.outcome.value, "clarify")
+        self.assertIsNone(route.tool_name)
 
     def test_positive_user_supplied_teamviewer_id_is_allowed(self) -> None:
         prompt = "Activate monitoring on TeamViewer ID 987654321."
@@ -220,10 +255,16 @@ class ValidationTests(unittest.TestCase):
         )
 
     def test_connection_report_update_requires_notes(self) -> None:
-        prompt = "Update connection report c123."
+        prompt = (
+            "Update connection report ID 550e8400-e29b-41d4-a716-446655440000 "
+            "with notes Reviewed."
+        )
         route = route_prompt(prompt)
         error = validate_invocation(
-            route, prompt, "tv_update_connection_report", {"connection_id": "c123"}
+            route,
+            prompt,
+            "tv_update_connection_report",
+            {"connection_id": "550e8400-e29b-41d4-a716-446655440000"},
         )
         self.assertIn("Missing required argument(s): notes", error or "")
 
@@ -233,7 +274,7 @@ class ValidationTests(unittest.TestCase):
         error = validate_invocation(
             route, prompt, "tv_delete_session", {"session_code": "s1"}
         )
-        self.assertIn("explicit identifier label", error or "")
+        self.assertIn("explicit request field", error or "")
 
     def test_numeric_identifier_substrings_are_not_provenance(self) -> None:
         prompt = "Activate monitoring on TeamViewer ID 987654321."
@@ -241,15 +282,13 @@ class ValidationTests(unittest.TestCase):
         error = validate_invocation(
             route, prompt, "tv_activate_monitoring", {"teamviewer_id": 1}
         )
-        self.assertIn("explicit identifier label", error or "")
+        self.assertIn("explicit request field", error or "")
 
     def test_name_cannot_masquerade_as_session_code(self) -> None:
         prompt = "Close support session named HITL-Test."
         route = route_prompt(prompt)
-        error = validate_invocation(
-            route, prompt, "tv_delete_session", {"session_code": "HITL-Test"}
-        )
-        self.assertIn("explicit identifier label", error or "")
+        self.assertEqual(route.outcome.value, "clarify")
+        self.assertIsNone(route.tool_name)
 
     def test_unknown_argument_is_rejected(self) -> None:
         prompt = "Show my account summary."
@@ -295,7 +334,7 @@ class ValidationTests(unittest.TestCase):
                 "end_date": "2026-08-20T00:00:00Z",
             },
         )
-        self.assertIn("must appear exactly", error or "")
+        self.assertIn("explicitly say", error or "")
 
     def test_explicit_iso_date_range_is_allowed(self) -> None:
         prompt = (
@@ -326,26 +365,81 @@ class ValidationTests(unittest.TestCase):
         )
         self.assertIn("Unsupported argument", error or "")
 
+    def test_unrequested_read_filter_is_rejected_even_when_false(self) -> None:
+        prompt = "List company-managed devices."
+        error = validate_invocation(
+            route_prompt(prompt),
+            prompt,
+            "tv_list_company_managed_devices",
+            {"online_state": "Offline"},
+        )
+        self.assertIn("not explicitly requested", error or "")
+
+    def test_requested_read_filter_must_match_the_exact_route(self) -> None:
+        prompt = "Show online devices in group ID g12345678."
+        error = validate_invocation(
+            route_prompt(prompt),
+            prompt,
+            "tv_list_devices",
+            {"groupid": "g12345678", "online_state": "Offline"},
+        )
+        self.assertIn("does not match", error or "")
+
+    def test_inventory_read_requires_numeric_teamviewer_id(self) -> None:
+        prompt = "Show hardware for monitored device with TeamViewer ID 987654321."
+        route = route_prompt(prompt)
+        self.assertIsNone(
+            validate_invocation(
+                route,
+                prompt,
+                "tv_get_device_hardware_info",
+                {"teamviewer_id": 987654321},
+            )
+        )
+        error = validate_invocation(
+            route,
+            prompt,
+            "tv_get_device_hardware_info",
+            {"teamviewer_id": "987654321"},
+        )
+        self.assertIn("numeric TeamViewer ID", error or "")
+
+    def test_event_log_date_fields_cannot_be_swapped(self) -> None:
+        prompt = (
+            "Show TeamViewer event logs from 2026-08-19T00:00:00Z "
+            "to 2026-08-20T00:00:00Z."
+        )
+        error = validate_invocation(
+            route_prompt(prompt),
+            prompt,
+            "tv_get_event_logs",
+            {
+                "start_date": "2026-08-20T00:00:00Z",
+                "end_date": "2026-08-19T00:00:00Z",
+            },
+        )
+        self.assertIn("do not match", error or "")
+
     def test_group_composition_requires_exact_name_provenance(self) -> None:
-        prompt = "Show the devices in StefanoGroup."
+        prompt = "Show the devices in SupportGroup."
         route = route_prompt(prompt)
         error = validate_invocation(
             route,
             prompt,
             "tv_list_devices_in_group",
-            {"group_name": "Stefano"},
+            {"group_name": "Support"},
         )
-        self.assertIn("must appear exactly", error or "")
+        self.assertIn("does not match", error or "")
 
     def test_exact_group_name_is_allowed(self) -> None:
-        prompt = "Show devices in managed group StefanoGroup."
+        prompt = "Show devices in managed group SupportGroup."
         route = route_prompt(prompt)
         self.assertIsNone(
             validate_invocation(
                 route,
                 prompt,
                 "tv_list_devices_in_group",
-                {"group_name": "StefanoGroup"},
+                {"group_name": "SupportGroup"},
             )
         )
 

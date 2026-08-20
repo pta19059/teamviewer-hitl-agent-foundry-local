@@ -40,7 +40,10 @@ class RoutingTests(unittest.TestCase):
                 "description to Lobby kiosk."
             ): "tv_update_managed_device_description",
             "Activate monitoring on TeamViewer ID 987654321.": "tv_activate_monitoring",
-            "Update connection report ID c123 notes to Reviewed.": "tv_update_connection_report",
+            (
+                "Update connection report ID 550e8400-e29b-41d4-a716-446655440000 "
+                "with notes Reviewed."
+            ): "tv_update_connection_report",
         }
         for prompt, expected in cases.items():
             with self.subTest(prompt=prompt):
@@ -101,7 +104,9 @@ class RoutingTests(unittest.TestCase):
                 "Set the description of managed device ID "
                 "550e8400-e29b-41d4-a716-446655440000 to Lab."
             ): "tv_update_managed_device_description",
-            "Add notes Reviewed to TeamViewer session code s123.": "tv_update_session",
+            (
+                "For TeamViewer session code s123, update description to Escalated case."
+            ): "tv_update_session",
             "Turn on monitoring for TeamViewer ID 987654321.": "tv_activate_monitoring",
         }
         for prompt, expected in cases.items():
@@ -124,7 +129,7 @@ class RoutingTests(unittest.TestCase):
             "Show my account summary.": "tv_get_account",
             "Show the company license.": "tv_get_company_license",
             "Show company-managed online devices.": "tv_list_company_managed_devices",
-            "Show the devices in StefanoGroup.": "tv_list_devices_in_group",
+            "Show the devices in SupportGroup.": "tv_list_devices_in_group",
             "List all TeamViewer sessions.": "tv_list_sessions",
             "List monitoring alarms.": "tv_list_monitoring_alarms",
             "List connection reports.": "tv_list_connection_reports",
@@ -161,17 +166,32 @@ class RoutingTests(unittest.TestCase):
 
     def test_additional_read_word_orders_are_deterministic(self) -> None:
         cases = {
-            "List devices belonging to StefanoGroup.": "tv_list_devices_in_group",
-            "List StefanoGroup devices.": "tv_list_devices_in_group",
+            "List devices belonging to SupportGroup.": "tv_list_devices_in_group",
+            "List SupportGroup devices.": "tv_list_devices_in_group",
             (
                 "Which groups contain managed device ID "
                 "550e8400-e29b-41d4-a716-446655440000?"
             ): "tv_get_managed_device_groups",
             "Show monitored devices.": "tv_list_monitoring_devices",
+            (
+                "Show hardware for monitored device with TeamViewer ID 987654321."
+            ): "tv_get_device_hardware_info",
+            (
+                "Show system information for monitored device with TeamViewer ID 987654321."
+            ): "tv_get_device_system_info",
+            (
+                "Show software for monitored device with TeamViewer ID 987654321."
+            ): "tv_get_device_software_info",
+            "Show devices in group ID g12345678.": "tv_list_devices",
+            "List managed device groups.": "tv_list_managed_groups",
+            "Show open TeamViewer session.": "tv_list_sessions",
         }
         for prompt, expected in cases.items():
             with self.subTest(prompt=prompt):
                 self.assert_tool(prompt, expected)
+
+        group_route = route_prompt("Show the devices in SupportGroup.")
+        self.assertEqual(dict(group_route.arguments), {"group_name": "SupportGroup"})
 
     def test_multiple_state_changes_require_clarification(self) -> None:
         route = route_prompt(
@@ -188,6 +208,63 @@ class RoutingTests(unittest.TestCase):
             "Close sessions with session code s1 and session code s2.",
         )
         for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                route = route_prompt(prompt)
+                self.assertEqual(route.outcome, RouteOutcome.CLARIFY)
+                self.assertIsNone(route.tool_name)
+
+    def test_unsupported_or_ambiguous_write_fields_fail_closed(self) -> None:
+        prompts = (
+            "Update TeamViewer session code s123 notes to Reviewed.",
+            (
+                "Create a TeamViewer session with description X and notes Y "
+                "in group ID g12345678."
+            ),
+            (
+                "Activate monitoring on TeamViewer ID 987654321 with monitoring "
+                "policy ID 550e8400-e29b-41d4-a716-446655440000."
+            ),
+            "Update connection report ID c123 with notes Reviewed.",
+        )
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                route = route_prompt(prompt)
+                self.assertEqual(route.outcome, RouteOutcome.CLARIFY)
+                self.assertIsNone(route.tool_name)
+
+    def test_read_filters_are_bound_or_rejected_instead_of_being_dropped(self) -> None:
+        cases = (
+            (
+                "Show offline company-managed devices.",
+                "tv_list_company_managed_devices",
+                {"online_state": "Offline"},
+            ),
+            (
+                "Show online devices in group ID g12345678.",
+                "tv_list_devices",
+                {"groupid": "g12345678", "online_state": "Online"},
+            ),
+            (
+                "List closed TeamViewer sessions.",
+                "tv_list_sessions",
+                {"state": "closed"},
+            ),
+        )
+        for prompt, tool_name, arguments in cases:
+            with self.subTest(prompt=prompt):
+                route = route_prompt(prompt)
+                self.assertEqual(route.tool_name, tool_name)
+                self.assertEqual(dict(route.arguments), arguments)
+
+        for prompt in (
+            "List sessions with tag closed.",
+            "List open and closed TeamViewer sessions.",
+            "Show online and offline managed devices.",
+            "Use tv_list_sessions with tag closed.",
+            "List company-managed devices in group Finance.",
+            "Get monitoring alarm ID alarm-1.",
+            "Get device report ID 550e8400-e29b-41d4-a716-446655440000.",
+        ):
             with self.subTest(prompt=prompt):
                 route = route_prompt(prompt)
                 self.assertEqual(route.outcome, RouteOutcome.CLARIFY)

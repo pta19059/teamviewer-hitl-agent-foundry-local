@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
+from typing import Any
 
 from .policy import APPROVAL_REQUIRED_TOOLS, READ_ONLY_TOOLS, UNSAFE_DISABLED_TOOLS
 
@@ -22,6 +23,7 @@ class IntentRoute:
     tool_name: str | None = None
     mutating: bool = False
     message: str | None = None
+    arguments: tuple[tuple[str, Any], ...] = ()
 
 
 _EXPLICIT_TOOL = re.compile(
@@ -96,6 +98,88 @@ _CREATE_SESSION_DESCRIPTION_GUIDANCE = (
     "Creating a TeamViewer support session requires exactly one explicit description before "
     "the group selector: 'with description <DESCRIPTION> in group ID <GROUP_ID>'."
 )
+_SAFE_IDENTIFIER_TEXT = r"[A-Za-z0-9_-]+"
+_UUID_TEXT = (
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+_SESSION_CODE_SELECTOR = re.compile(
+    rf"\bsession\s+code\s+(?P<session_code>{_SAFE_IDENTIFIER_TEXT})\b",
+    re.IGNORECASE,
+)
+_TEAMVIEWER_ID_SELECTOR = re.compile(
+    r"\bteamviewer\s+id\s+(?P<teamviewer_id>[0-9]+)\b", re.IGNORECASE
+)
+_SESSION_UPDATE_PATTERNS = (
+    re.compile(
+        rf"\bsession\s+code\s+(?P<session_code>{_SAFE_IDENTIFIER_TEXT})\b"
+        r".{0,100}?\b(?:with\s+)?description(?:\s+to)?\s+"
+        r"(?P<description>.+)$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\bdescription\s+of\s+(?:teamviewer\s+)?session\s+code\s+"
+        rf"(?P<session_code>{_SAFE_IDENTIFIER_TEXT})\s+to\s+"
+        r"(?P<description>.+)$",
+        re.IGNORECASE,
+    ),
+)
+_MANAGED_DEVICE_UPDATE_PATTERNS = (
+    re.compile(
+        rf"\bmanaged[ -]device\s+id\s+(?P<device_id>{_UUID_TEXT})\b"
+        r".{0,80}?\b(?:with\s+)?description(?:\s+to)?\s+"
+        r"(?P<description>.+)$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\bdescription\s+of\s+managed[ -]device\s+id\s+"
+        rf"(?P<device_id>{_UUID_TEXT})\s+to\s+(?P<description>.+)$",
+        re.IGNORECASE,
+    ),
+)
+_CONNECTION_REPORT_UPDATE = re.compile(
+    rf"\bconnection[ -]report\s+id\s+(?P<connection_id>{_UUID_TEXT})\b"
+    r".{0,80}?\b(?:with\s+)?notes?(?:\s+to)?\s+(?P<notes>.+)$",
+    re.IGNORECASE,
+)
+_UNSUPPORTED_SESSION_METADATA = re.compile(
+    r"\b(?:notes?|tags?|supporter(?:\s+name)?|end[ -]customer)\b",
+    re.IGNORECASE,
+)
+_POLICY_SELECTOR = re.compile(
+    r"\b(?:monitoring|patch(?:\s+management)?)\s+policy\s+id\b",
+    re.IGNORECASE,
+)
+_NAMED_GROUP_PATTERNS = (
+    re.compile(
+        r"\bdevices?(?:\s+are)?\s+(?:in|from|of|belong(?:s|ing)?\s+to)\s+"
+        r"(?:(?:managed|legacy)\s+)?(?:group(?:\s+name)?\s+)?"
+        r"(?P<group_name>.+)$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\blist\s+(?P<group_name>.+?)\s+devices?\b", re.IGNORECASE
+    ),
+)
+_WRITE_GUIDANCE: dict[str, str] = {
+    "tv_update_session": (
+        "Session updates support exactly one session code and one description, for example: "
+        "'Update TeamViewer session code s123 with description Escalated case'."
+    ),
+    "tv_delete_session": (
+        "Closing a session requires exactly one immediate 'session code <CODE>' selector."
+    ),
+    "tv_update_managed_device_description": (
+        "Managed-device description updates require one canonical device UUID and one description."
+    ),
+    "tv_activate_monitoring": (
+        "Monitoring activation requires exactly one numeric 'TeamViewer ID <ID>' and does not "
+        "accept policy selectors in this safety profile."
+    ),
+    "tv_update_connection_report": (
+        "Connection-report updates require one report UUID and one notes value."
+    ),
+}
 
 
 def _has(pattern: re.Pattern[str], text: str) -> bool:
@@ -137,6 +221,103 @@ def _create_session_prompt_error(text: str) -> str | None:
         or len(_CREATE_SESSION_DESCRIPTION_LABEL.findall(text)) != 1
     ):
         return _CREATE_SESSION_DESCRIPTION_GUIDANCE
+    return None
+
+
+def _clean_mutable_value(value: str) -> str:
+    cleaned = " ".join(value.strip().split())
+    if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in {"'", '"'}:
+        return cleaned[1:-1].strip()
+    return cleaned[:-1].rstrip() if cleaned.endswith(".") else cleaned
+
+
+def _single_pattern_match(
+    patterns: tuple[re.Pattern[str], ...], text: str
+) -> re.Match[str] | None:
+    matches = [match for pattern in patterns for match in pattern.finditer(text)]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _write_arguments(tool_name: str, text: str) -> dict[str, Any] | None:
+    """Extract the exact state-changing call authorized by the operator's words."""
+    if tool_name == "tv_create_session":
+        if _create_session_prompt_error(text) or _UNSUPPORTED_SESSION_METADATA.search(text):
+            return None
+        return {
+            "description": create_session_descriptions(text)[0],
+            "groupid": create_session_group_ids(text)[0],
+        }
+
+    if tool_name == "tv_update_session":
+        if _UNSUPPORTED_SESSION_METADATA.search(text):
+            return None
+        match = _single_pattern_match(_SESSION_UPDATE_PATTERNS, text)
+        if match is None or len(_SESSION_CODE_SELECTOR.findall(text)) != 1:
+            return None
+        description = _clean_mutable_value(match.group("description"))
+        if not description:
+            return None
+        return {
+            "session_code": match.group("session_code"),
+            "description": description,
+        }
+
+    if tool_name == "tv_delete_session":
+        matches = list(_SESSION_CODE_SELECTOR.finditer(text))
+        if len(matches) != 1:
+            return None
+        return {"session_code": matches[0].group("session_code")}
+
+    if tool_name == "tv_update_managed_device_description":
+        match = _single_pattern_match(_MANAGED_DEVICE_UPDATE_PATTERNS, text)
+        if match is None:
+            return None
+        description = _clean_mutable_value(match.group("description"))
+        if not description:
+            return None
+        return {
+            "device_id": match.group("device_id").casefold(),
+            "description": description,
+        }
+
+    if tool_name == "tv_activate_monitoring":
+        matches = list(_TEAMVIEWER_ID_SELECTOR.finditer(text))
+        if len(matches) != 1 or _POLICY_SELECTOR.search(text):
+            return None
+        value = int(matches[0].group("teamviewer_id"))
+        if not 0 < value <= 9_007_199_254_740_991:
+            return None
+        return {"teamviewer_id": value}
+
+    if tool_name == "tv_update_connection_report":
+        matches = list(_CONNECTION_REPORT_UPDATE.finditer(text))
+        if len(matches) != 1:
+            return None
+        notes = _clean_mutable_value(matches[0].group("notes"))
+        if not notes:
+            return None
+        return {
+            "connection_id": matches[0].group("connection_id").casefold(),
+            "notes": notes,
+        }
+
+    return None
+
+
+def _write_prompt_error(tool_name: str, text: str) -> str | None:
+    if tool_name == "tv_create_session":
+        create_error = _create_session_prompt_error(text)
+        if create_error:
+            return create_error
+        if _UNSUPPORTED_SESSION_METADATA.search(text):
+            return (
+                "Session creation supports only description and an existing legacy group ID; "
+                "optional session metadata is disabled because the official API does not "
+                "define the MCP server's extra fields."
+            )
+        return None
+    if _write_arguments(tool_name, text) is None:
+        return _WRITE_GUIDANCE[tool_name]
     return None
 
 
@@ -249,13 +430,128 @@ def _has_multiple_write_targets(text: str) -> bool:
     return any(len(re.findall(label, text, re.IGNORECASE)) > 1 for label in labels)
 
 
-def _tool_route(intent: str, tool_name: str) -> IntentRoute:
+def _tool_route(
+    intent: str, tool_name: str, arguments: dict[str, Any] | None = None
+) -> IntentRoute:
     return IntentRoute(
         outcome=RouteOutcome.TOOL,
         intent=intent,
         tool_name=tool_name,
         mutating=tool_name in APPROVAL_REQUIRED_TOOLS,
+        arguments=tuple((arguments or {}).items()),
     )
+
+
+def _availability_arguments(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    states = [
+        value
+        for value in ("Online", "Offline")
+        if re.search(rf"\b{value}\b", text, re.IGNORECASE)
+    ]
+    if len(states) > 1:
+        return None, "Request either online devices or offline devices, not both."
+    return ({"online_state": states[0]} if states else None), None
+
+
+def _explicit_read_arguments(
+    tool_name: str, text: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Bind supported optional filters on an explicitly named read tool."""
+    lowered = text.casefold()
+    if tool_name == "tv_list_devices":
+        arguments, error = _availability_arguments(text)
+        if error:
+            return None, error
+        if re.search(r"\b(?:shared|alias|remote\s+control)\b", lowered):
+            return None, (
+                "Legacy device lists expose only group ID and online/offline filters."
+            )
+        group_labels = re.findall(r"\bgroup\s+(?:id|name)\b", text, re.IGNORECASE)
+        group_ids = re.findall(r"\bgroup\s+id\s+(g[0-9]+)\b", text, re.IGNORECASE)
+        if len(group_labels) > 1 or (group_labels and len(group_ids) != 1):
+            return None, "Use at most one exact legacy 'group ID g<number>' filter."
+        if group_ids:
+            arguments = dict(arguments or {})
+            arguments["groupid"] = group_ids[0]
+        return arguments, None
+
+    if tool_name in {
+        "tv_list_managed_devices",
+        "tv_list_company_managed_devices",
+    }:
+        if re.search(
+            r"\b(?:group|user|policy|name|description)\b|\bdevice\s+id\b",
+            lowered,
+        ):
+            return None, "Managed-device lists expose only an online/offline filter."
+        return _availability_arguments(text)
+
+    if tool_name == "tv_list_sessions":
+        if re.search(
+            r"\b(?:tag|group\s+id|assigned\s+user|full\s+list|session\s+code|"
+            r"from|to|user)\b",
+            lowered,
+        ):
+            return None, (
+                "Session listing exposes only one optional open/closed state filter."
+            )
+        states = [
+            value
+            for value in ("open", "closed")
+            if re.search(rf"\b{value}\b", lowered)
+        ]
+        if len(states) > 1:
+            return None, "Request either open sessions or closed sessions, not both."
+        return ({"state": states[0]} if states else None), None
+
+    if tool_name == "tv_list_devices_in_group":
+        explicit = re.search(r"\bgroup\s+name\s+(?P<name>.+)$", text, re.IGNORECASE)
+        match = explicit or _single_pattern_match(_NAMED_GROUP_PATTERNS, text)
+        if match is None:
+            return None, "Supply exactly one explicit group name for the device-list request."
+        group_name = _clean_mutable_value(
+            match.group("name") if explicit else match.group("group_name")
+        )
+        if not group_name:
+            return None, "Supply a non-empty group name."
+        return {"group_name": group_name}, None
+
+    if tool_name == "tv_list_device_groups":
+        if re.search(r"\b(?:shared|name|owner|permission|group\s+id)\b", lowered):
+            return None, "Filtered legacy group listing is not exposed."
+        return None, None
+
+    if tool_name == "tv_list_managed_groups":
+        if re.search(r"\bgroup\s+(?:id|name)\b", lowered):
+            return None, "Filtered managed-group listing is not exposed."
+        return None, None
+
+    if tool_name == "tv_list_monitoring_devices":
+        if re.search(r"\b(?:teamviewer|device|group|policy)\s+id\b", lowered):
+            return None, "Filtered monitoring-device listing is not exposed."
+        return None, None
+
+    filtered_patterns = {
+        "tv_list_connection_reports": (
+            r"\b(?:user|group|device|session)\s+(?:id|code)\b|"
+            r"\b(?:from|to|limit|offset|for|where|with|email)\b"
+        ),
+        "tv_list_device_reports": (
+            r"\b(?:user|origin|target|device|report)\s+id\b|"
+            r"\b(?:from|to|limit|offset|for|where|with)\b"
+        ),
+        "tv_list_monitoring_alarms": (
+            r"\b(?:open|closed|status|alarm\s+id|device\s+id|group\s+id|"
+            r"from|to|for|where|with)\b"
+        ),
+    }
+    pattern = filtered_patterns.get(tool_name)
+    if pattern and re.search(pattern, lowered):
+        return None, (
+            f"Filtered {tool_name} requests are disabled in this safety profile; "
+            "request the complete list."
+        )
+    return None, None
 
 
 def _clarify(message: str) -> IntentRoute:
@@ -292,11 +588,17 @@ def route_prompt(prompt: str) -> IntentRoute:
             )
         if tool_name not in READ_ONLY_TOOLS | APPROVAL_REQUIRED_TOOLS:
             return _clarify(f"{tool_name} is not available under the current safety policy.")
-        if tool_name == "tv_create_session":
-            create_error = _create_session_prompt_error(text)
-            if create_error:
-                return _clarify(create_error)
-        return _tool_route(f"explicit:{tool_name}", tool_name)
+        if tool_name in APPROVAL_REQUIRED_TOOLS:
+            write_error = _write_prompt_error(tool_name, text)
+            if write_error:
+                return _clarify(write_error)
+            return _tool_route(
+                f"explicit:{tool_name}", tool_name, _write_arguments(tool_name, text)
+            )
+        arguments, read_error = _explicit_read_arguments(tool_name, text)
+        if read_error:
+            return _clarify(read_error)
+        return _tool_route(f"explicit:{tool_name}", tool_name, arguments)
 
     write_matches = _write_matches(text, lowered)
     if _has_unsupported_write(text, lowered):
@@ -308,10 +610,14 @@ def route_prompt(prompt: str) -> IntentRoute:
         return _clarify("Request one state-changing TeamViewer operation at a time.")
     if write_matches:
         intent, tool_name = write_matches[0]
-        if tool_name == "tv_create_session":
-            create_error = _create_session_prompt_error(text)
-            if create_error:
-                return _clarify(create_error)
+        if tool_name in UNSAFE_DISABLED_TOOLS:
+            return _clarify(
+                "Policy assignment is temporarily disabled because the official TeamViewer MCP "
+                "schema does not define a safe typed assignment payload."
+            )
+        write_error = _write_prompt_error(tool_name, text)
+        if write_error:
+            return _clarify(write_error)
         if _has_multiple_write_targets(text) or any(
             re.search(pattern, lowered)
             for pattern in (
@@ -322,12 +628,9 @@ def route_prompt(prompt: str) -> IntentRoute:
             )
         ):
             return _clarify("Request exactly one target for a state-changing operation.")
-        if tool_name in UNSAFE_DISABLED_TOOLS:
-            return _clarify(
-                "Policy assignment is temporarily disabled because the official TeamViewer MCP "
-                "schema does not define a safe typed assignment payload."
-            )
-        return _tool_route(intent, tool_name)
+        return _tool_route(
+            intent, tool_name, _write_arguments(tool_name, text)
+        )
 
     # Never reinterpret an unsupported state change as a related read operation.
     # This is deliberately before every read route.
@@ -357,31 +660,76 @@ def route_prompt(prompt: str) -> IntentRoute:
     if "connection" in lowered and "ai summary" in lowered:
         return _tool_route("connection_ai_summary", "tv_get_connection_ai_summary")
     if "device report" in lowered:
-        return _tool_route("device_reports", "tv_list_device_reports")
+        arguments, error = _explicit_read_arguments("tv_list_device_reports", text)
+        return _clarify(error) if error else _tool_route(
+            "device_reports", "tv_list_device_reports", arguments
+        )
     if "connection report" in lowered:
         if any(word in lowered for word in ("list", "reports", "all")):
-            return _tool_route("connection_reports", "tv_list_connection_reports")
+            arguments, error = _explicit_read_arguments(
+                "tv_list_connection_reports", text
+            )
+            return _clarify(error) if error else _tool_route(
+                "connection_reports", "tv_list_connection_reports", arguments
+            )
         return _tool_route("connection_report", "tv_get_connection_report")
     if "monitoring alarm" in lowered or "monitoring alert" in lowered:
-        return _tool_route("monitoring_alarms", "tv_list_monitoring_alarms")
-    if "monitored device" in lowered or "monitored devices" in lowered:
-        return _tool_route("monitoring_devices", "tv_list_monitoring_devices")
+        arguments, error = _explicit_read_arguments("tv_list_monitoring_alarms", text)
+        return _clarify(error) if error else _tool_route(
+            "monitoring_alarms", "tv_list_monitoring_alarms", arguments
+        )
     if "hardware" in lowered and "device" in lowered:
         return _tool_route("device_hardware", "tv_get_device_hardware_info")
     if "software" in lowered and "device" in lowered:
         return _tool_route("device_software", "tv_get_device_software_info")
     if "system" in lowered and "device" in lowered:
         return _tool_route("device_system", "tv_get_device_system_info")
+    if "monitored device" in lowered or "monitored devices" in lowered:
+        if re.search(r"\b(?:teamviewer|device|group|policy)\s+id\b", lowered):
+            return _clarify(
+                "Filtered monitoring-device listing is not exposed; request all monitored "
+                "devices, or request hardware, system, or software by TeamViewer ID."
+            )
+        return _tool_route("monitoring_devices", "tv_list_monitoring_devices")
     if "monitoring" in lowered and "device" in lowered:
+        if re.search(r"\b(?:teamviewer|device|group|policy)\s+id\b", lowered):
+            return _clarify(
+                "Filtered monitoring-device listing is not exposed; request all monitored "
+                "devices, or request hardware, system, or software by TeamViewer ID."
+            )
         return _tool_route("monitoring_devices", "tv_list_monitoring_devices")
     if "session" in lowered:
-        if any(word in lowered for word in ("list", "sessions", "all")):
-            return _tool_route("sessions", "tv_list_sessions")
+        session_codes = list(_SESSION_CODE_SELECTOR.finditer(text))
+        if len(session_codes) == 1 and not re.search(r"\bsessions\b", lowered):
+            return _tool_route("session", "tv_get_session")
+        if len(session_codes) > 1:
+            return _clarify("Request exactly one TeamViewer session code.")
+        arguments, error = _explicit_read_arguments("tv_list_sessions", text)
+        if error:
+            return _clarify(error)
+        if arguments is not None or any(
+            word in lowered for word in ("list", "sessions", "all")
+        ):
+            return _tool_route("sessions", "tv_list_sessions", arguments)
         return _tool_route("session", "tv_get_session")
     if "company-managed" in lowered or "company managed" in lowered:
-        return _tool_route("company_managed_devices", "tv_list_company_managed_devices")
+        arguments, error = _explicit_read_arguments(
+            "tv_list_company_managed_devices", text
+        )
+        if error:
+            return _clarify(error)
+        return _tool_route(
+            "company_managed_devices", "tv_list_company_managed_devices", arguments
+        )
     if "directly managed" in lowered:
-        return _tool_route("managed_devices", "tv_list_managed_devices")
+        arguments, error = _explicit_read_arguments("tv_list_managed_devices", text)
+        if error:
+            return _clarify(error)
+        return _tool_route("managed_devices", "tv_list_managed_devices", arguments)
+    if re.search(r"\bmanaged[ -]device\s+groups\b", lowered) and not re.search(
+        r"\bmanaged[ -]device\s+id\b", lowered
+    ):
+        return _tool_route("managed_groups", "tv_list_managed_groups")
     if "managed device" in lowered and "group" in lowered:
         if any(
             phrase in lowered
@@ -398,27 +746,54 @@ def route_prompt(prompt: str) -> IntentRoute:
     if "device group" in lowered and any(
         word in lowered for word in ("list", "groups", "all")
     ):
+        if re.search(r"\b(?:shared|name|owner|permission)\b", lowered):
+            return _clarify("Filtered legacy group listing is not exposed.")
         return _tool_route("legacy_groups", "tv_list_device_groups")
     if "device" in lowered and (
         re.search(r"(?:\bin\b|\bfrom\b|\bof\b|\bbelong(?:s|ing)?\s+to\b).{0,80}group", lowered)
         or re.search(r"group.{0,80}\bdevices?\b", lowered)
     ):
-        return _tool_route("group_devices", "tv_list_devices_in_group")
+        group_id_match = re.search(
+            r"\bgroup\s+id\s+(?P<groupid>g[0-9]+)\b", text, re.IGNORECASE
+        )
+        if group_id_match:
+            arguments, error = _explicit_read_arguments("tv_list_devices", text)
+            if error:
+                return _clarify(error)
+            return _tool_route(
+                "legacy_group_devices",
+                "tv_list_devices",
+                arguments,
+            )
+        arguments, error = _explicit_read_arguments("tv_list_devices_in_group", text)
+        return _clarify(error) if error else _tool_route(
+            "group_devices", "tv_list_devices_in_group", arguments
+        )
     if "managed group" in lowered:
         if any(word in lowered for word in ("list", "groups", "all")):
             return _tool_route("managed_groups", "tv_list_managed_groups")
-        return _tool_route("managed_group", "tv_list_managed_groups")
+        return _clarify(
+            "Request all managed groups, or use the exact group name in a device-list request."
+        )
     if "group" in lowered:
         if any(word in lowered for word in ("list", "groups", "all")):
             return _tool_route("legacy_groups", "tv_list_device_groups")
         return _tool_route("legacy_group", "tv_get_device_group")
     if "managed device" in lowered:
         if any(word in lowered for word in ("list", "devices", "all", "online")):
-            return _tool_route("managed_devices", "tv_list_managed_devices")
+            arguments, error = _explicit_read_arguments(
+                "tv_list_managed_devices", text
+            )
+            if error:
+                return _clarify(error)
+            return _tool_route("managed_devices", "tv_list_managed_devices", arguments)
         return _tool_route("managed_device", "tv_get_managed_device")
     if "device" in lowered:
         if any(word in lowered for word in ("list", "devices", "all", "online", "offline")):
-            return _tool_route("legacy_devices", "tv_list_devices")
+            arguments, error = _explicit_read_arguments("tv_list_devices", text)
+            if error:
+                return _clarify(error)
+            return _tool_route("legacy_devices", "tv_list_devices", arguments)
         return _tool_route("legacy_device", "tv_get_device")
 
     if "teamviewer" in lowered and _OPERATIONAL_VERB.search(text):

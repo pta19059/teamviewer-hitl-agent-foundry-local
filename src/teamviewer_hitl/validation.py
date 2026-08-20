@@ -10,26 +10,18 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from .routing import (
-    IntentRoute,
-    create_session_descriptions,
-    create_session_group_ids,
-)
+from .routing import IntentRoute
 
 _SAFE_TEXT_ID = re.compile(r"^[A-Za-z0-9_-]+$")
-_EMAIL = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
 
 _READ_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "tv_get_account": (frozenset(), frozenset()),
     "tv_get_company": (frozenset(), frozenset()),
     "tv_get_company_license": (frozenset(), frozenset()),
-    "tv_list_device_groups": (
-        frozenset({"name", "shared", "shouldMatchFullName"}),
-        frozenset(),
-    ),
+    "tv_list_device_groups": (frozenset(), frozenset()),
     "tv_get_device_group": (frozenset({"group_id"}), frozenset({"group_id"})),
     "tv_list_devices": (
-        frozenset({"groupid", "online_state", "full_list"}),
+        frozenset({"groupid", "online_state"}),
         frozenset(),
     ),
     "tv_get_device": (frozenset({"device_id"}), frozenset({"device_id"})),
@@ -38,17 +30,15 @@ _READ_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
             {
                 "start_date",
                 "end_date",
-                "event_names",
-                "event_types",
-                "account_emails",
-                "affected_item",
-                "rc_session_guid",
             }
         ),
         frozenset({"start_date", "end_date"}),
     ),
-    "tv_list_managed_devices": (frozenset(), frozenset()),
-    "tv_list_company_managed_devices": (frozenset(), frozenset()),
+    "tv_list_managed_devices": (frozenset({"online_state"}), frozenset()),
+    "tv_list_company_managed_devices": (
+        frozenset({"online_state"}),
+        frozenset(),
+    ),
     "tv_get_managed_device": (
         frozenset({"device_id"}),
         frozenset({"device_id"}),
@@ -57,33 +47,22 @@ _READ_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset({"device_id"}),
         frozenset({"device_id"}),
     ),
-    "tv_list_managed_groups": (
-        frozenset({"limit", "offset"}),
-        frozenset(),
-    ),
-    "tv_list_monitoring_alarms": (
-        frozenset({"status", "device_id", "group_id", "start_date", "end_date"}),
-        frozenset(),
-    ),
+    "tv_list_managed_groups": (frozenset(), frozenset()),
+    "tv_list_monitoring_alarms": (frozenset(), frozenset()),
     "tv_list_monitoring_devices": (frozenset(), frozenset()),
     "tv_get_device_hardware_info": (
-        frozenset({"device_id"}),
-        frozenset({"device_id"}),
+        frozenset({"teamviewer_id"}),
+        frozenset({"teamviewer_id"}),
     ),
     "tv_get_device_system_info": (
-        frozenset({"device_id"}),
-        frozenset({"device_id"}),
+        frozenset({"teamviewer_id"}),
+        frozenset({"teamviewer_id"}),
     ),
     "tv_get_device_software_info": (
-        frozenset({"device_id"}),
-        frozenset({"device_id"}),
+        frozenset({"teamviewer_id"}),
+        frozenset({"teamviewer_id"}),
     ),
-    "tv_list_connection_reports": (
-        frozenset(
-            {"userid", "groupid", "deviceid", "from_date", "to_date", "limit", "offset"}
-        ),
-        frozenset(),
-    ),
+    "tv_list_connection_reports": (frozenset(), frozenset()),
     "tv_get_connection_report": (
         frozenset({"connection_id"}),
         frozenset({"connection_id"}),
@@ -92,12 +71,9 @@ _READ_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset({"connection_id"}),
         frozenset({"connection_id"}),
     ),
-    "tv_list_device_reports": (
-        frozenset({"from_date", "to_date"}),
-        frozenset(),
-    ),
+    "tv_list_device_reports": (frozenset(), frozenset()),
     "tv_list_sessions": (
-        frozenset({"state", "tag"}),
+        frozenset({"state"}),
         frozenset(),
     ),
     "tv_get_session": (
@@ -112,22 +88,12 @@ _READ_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
 
 _WRITE_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "tv_create_session": (
-        frozenset(
-            {
-                "description",
-                "groupid",
-                "tag",
-                "notes",
-                "supporter_name",
-                "end_customer_name",
-                "end_customer_email",
-            }
-        ),
+        frozenset({"description", "groupid"}),
         frozenset({"description", "groupid"}),
     ),
     "tv_update_session": (
-        frozenset({"session_code", "description", "tag", "notes"}),
-        frozenset({"session_code"}),
+        frozenset({"session_code", "description"}),
+        frozenset({"session_code", "description"}),
     ),
     "tv_delete_session": (
         frozenset({"session_code"}),
@@ -138,13 +104,7 @@ _WRITE_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset({"device_id", "description"}),
     ),
     "tv_activate_monitoring": (
-        frozenset(
-            {
-                "teamviewer_id",
-                "monitoring_policy_id",
-                "patch_management_policy_id",
-            }
-        ),
+        frozenset({"teamviewer_id"}),
         frozenset({"teamviewer_id"}),
     ),
     "tv_update_connection_report": (
@@ -153,27 +113,58 @@ _WRITE_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     ),
 }
 
-_IDENTIFIER_LABELS: dict[str, re.Pattern[str]] = {
-    "sessioncode": re.compile(r"\bsession\s+code\b", re.IGNORECASE),
+_UUID_TEXT = (
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
+_IDENTIFIER_VALUES: dict[str, re.Pattern[str]] = {
+    "sessioncode": re.compile(
+        r"\bsession\s+code\s+(?P<value>[A-Za-z0-9_-]+)\b", re.IGNORECASE
+    ),
     "connectionid": re.compile(
-        r"\bconnection(?:\s+report)?\s+id\b", re.IGNORECASE
+        rf"\bconnection(?:\s+report)?\s+id\s+(?P<value>{_UUID_TEXT})\b",
+        re.IGNORECASE,
     ),
     "deviceid": re.compile(
-        r"\b(?:managed\s+|monitored\s+)?device\s+id\b", re.IGNORECASE
+        rf"\b(?:managed\s+|monitored\s+)?device\s+id\s+"
+        rf"(?P<value>{_UUID_TEXT}|[A-Za-z0-9_-]+)\b",
+        re.IGNORECASE,
     ),
-    "groupid": re.compile(r"\b(?:managed\s+)?group\s+id\b", re.IGNORECASE),
-    "teamviewerid": re.compile(r"\bteamviewer\s+id\b", re.IGNORECASE),
+    "groupid": re.compile(
+        r"\b(?:managed\s+)?group\s+id\s+(?P<value>[A-Za-z0-9_-]+)\b",
+        re.IGNORECASE,
+    ),
+    "teamviewerid": re.compile(
+        r"\bteamviewer\s+id\s+(?P<value>[0-9]+)\b", re.IGNORECASE
+    ),
     "monitoringpolicyid": re.compile(
-        r"\bmonitoring\s+policy\s+id\b", re.IGNORECASE
+        rf"\bmonitoring\s+policy\s+id\s+(?P<value>{_UUID_TEXT})\b",
+        re.IGNORECASE,
     ),
     "patchmanagementpolicyid": re.compile(
-        r"\bpatch(?:\s+management)?\s+policy\s+id\b", re.IGNORECASE
+        rf"\bpatch(?:\s+management)?\s+policy\s+id\s+(?P<value>{_UUID_TEXT})\b",
+        re.IGNORECASE,
     ),
-    "userid": re.compile(r"\buser\s+id\b", re.IGNORECASE),
+    "userid": re.compile(
+        r"\buser\s+id\s+(?P<value>[A-Za-z0-9_-]+)\b", re.IGNORECASE
+    ),
     "rcsessionguid": re.compile(
-        r"\b(?:remote\s+control|rc)\s+session\s+guid\b", re.IGNORECASE
+        rf"\b(?:remote\s+control|rc)\s+session\s+guid\s+"
+        rf"(?P<value>{_UUID_TEXT})\b",
+        re.IGNORECASE,
     ),
 }
+
+_ROUTE_BOUND_READ_FIELDS: dict[str, frozenset[str]] = {
+    "tv_list_devices": frozenset({"groupid", "online_state"}),
+    "tv_list_managed_devices": frozenset({"online_state"}),
+    "tv_list_company_managed_devices": frozenset({"online_state"}),
+    "tv_list_sessions": frozenset({"state"}),
+    "tv_list_devices_in_group": frozenset({"group_name"}),
+}
+_DATE_RANGE = re.compile(
+    r"\bfrom\s+(?P<start>\S+)\s+to\s+(?P<end>\S+)", re.IGNORECASE
+)
 
 
 def arguments_to_dict(arguments: BaseModel | Mapping[str, Any] | str | Any) -> dict[str, Any]:
@@ -198,29 +189,14 @@ def _normalized_key(key: str) -> str:
     return re.sub(r"[^a-z0-9]", "", key.casefold())
 
 
-def _contains_exact(prompt: str, value: Any) -> bool:
-    needle = str(value).strip()
-    if not needle:
-        return False
-    return (
-        re.search(
-            rf"(?<![A-Za-z0-9]){re.escape(needle)}(?![A-Za-z0-9])",
-            prompt,
-            re.IGNORECASE,
-        )
-        is not None
-    )
-
-
 def _has_labeled_identifier(prompt: str, key: str, value: Any) -> bool:
-    label = _IDENTIFIER_LABELS.get(_normalized_key(key))
-    if label is None or not _contains_exact(prompt, value):
+    selector = _IDENTIFIER_VALUES.get(_normalized_key(key))
+    if selector is None:
         return False
-    for match in label.finditer(prompt):
-        tail = prompt[match.end() : match.end() + 80]
-        if _contains_exact(tail, value):
-            return True
-    return False
+    matches = list(selector.finditer(prompt))
+    if len(matches) != 1:
+        return False
+    return str(matches[0].group("value")).casefold() == str(value).casefold()
 
 
 def _nonempty_string(arguments: Mapping[str, Any], key: str) -> bool:
@@ -273,11 +249,51 @@ def _validate_contract(
     return None
 
 
+def _comparable_value(key: str, value: Any) -> Any:
+    if isinstance(value, str):
+        normalized = " ".join(value.strip().split())
+        if key in {
+            "groupid",
+            "device_id",
+            "connection_id",
+            "session_code",
+            "state",
+            "online_state",
+        }:
+            return normalized.casefold()
+        return normalized
+    return value
+
+
+def _validate_route_binding(
+    route: IntentRoute, function_name: str, arguments: Mapping[str, Any]
+) -> str | None:
+    expected = dict(route.arguments)
+    if function_name in _WRITE_CONTRACTS:
+        if set(arguments) != set(expected):
+            return "The proposed write arguments do not exactly match the routed request."
+        for key, value in expected.items():
+            if _comparable_value(key, arguments.get(key)) != _comparable_value(key, value):
+                return f"The proposed {key} does not match its explicit request field."
+        return None
+
+    bound_fields = _ROUTE_BOUND_READ_FIELDS.get(function_name, frozenset())
+    for key in bound_fields:
+        if key in arguments and key not in expected:
+            return f"The {key} filter was not explicitly requested."
+    for key, value in expected.items():
+        if key not in arguments:
+            return f"The explicitly requested {key} filter is missing."
+        if _comparable_value(key, arguments[key]) != _comparable_value(key, value):
+            return f"The {key} filter does not match the routed request."
+    return None
+
+
 def _validate_identifier_provenance(
     prompt: str, arguments: Mapping[str, Any]
 ) -> str | None:
     for key, value in arguments.items():
-        if _normalized_key(key) not in _IDENTIFIER_LABELS:
+        if _normalized_key(key) not in _IDENTIFIER_VALUES:
             continue
         if not _has_labeled_identifier(prompt, key, value):
             return (
@@ -290,125 +306,81 @@ def _validate_identifier_provenance(
 def _validate_read_arguments(
     function_name: str, prompt: str, arguments: Mapping[str, Any]
 ) -> str | None:
-    for key in ("pagination_token", "continuation_token"):
-        if key in arguments:
-            return f"{key} is controlled by the host and cannot be model-supplied."
+    if function_name == "tv_get_event_logs":
+        start = arguments.get("start_date")
+        end = arguments.get("end_date")
+        if _iso_datetime(start) is None or _iso_datetime(end) is None:
+            return "start_date and end_date must be ISO 8601 date/times."
+        match = _DATE_RANGE.search(prompt)
+        if match is None:
+            return "The event-log request must explicitly say 'from <START> to <END>'."
+        prompt_start = match.group("start").rstrip(".,")
+        prompt_end = match.group("end").rstrip(".,")
+        if str(start) != prompt_start or str(end) != prompt_end:
+            return "The event-log dates do not match their explicit from/to fields."
+        start_value = _iso_datetime(start)
+        end_value = _iso_datetime(end)
+        assert start_value is not None and end_value is not None
+        try:
+            if start_value > end_value:
+                return "The start date must not be after the end date."
+        except TypeError:
+            return "The date range must use consistent timezone information."
 
-    for key, value in arguments.items():
-        if key in {"start_date", "end_date", "from_date", "to_date"}:
-            if _iso_datetime(value) is None:
-                return f"{key} must be an ISO 8601 date/time."
-            if not _contains_exact(prompt, value):
-                return f"{key} must appear exactly in the current request."
-        elif key in {"limit", "offset"}:
-            if not isinstance(value, int) or isinstance(value, bool):
-                return f"{key} must be an integer."
-            if key == "limit" and not 1 <= value <= 1000:
-                return "limit must be between 1 and 1000."
-            if key == "offset" and value < 0:
-                return "offset cannot be negative."
-            if not _contains_exact(prompt, value):
-                return f"{key} must appear exactly in the current request."
-        elif key == "online_state":
-            if value not in {"Online", "Busy", "NotSupported", "Offline"}:
-                return "online_state is not an allowed TeamViewer state."
-            if not _contains_exact(prompt, value):
-                return "online_state must appear exactly in the current request."
-        elif key == "state":
-            if value not in {"open", "closed"}:
-                return "Session state must be open or closed."
-            if not _contains_exact(prompt, value):
-                return "Session state must appear exactly in the current request."
-        elif key == "status":
-            if (
-                not isinstance(value, str)
-                or not value.strip()
-                or not _contains_exact(prompt, value)
-            ):
-                return "Monitoring alarm status must appear exactly in the current request."
-        elif key in {"shared", "shouldMatchFullName", "full_list"}:
-            if not isinstance(value, bool):
-                return f"{key} must be a boolean."
-            if value and key == "shared" and "shared" not in prompt.casefold():
-                return "The shared filter was not requested."
-            if value and key == "shouldMatchFullName" and not re.search(
-                r"\bexact(?:ly)?\b", prompt, re.IGNORECASE
-            ):
-                return "Exact full-name matching was not requested."
-            if value and key == "full_list" and not re.search(
-                r"\binclud(?:e|ing)\s+deleted\b", prompt, re.IGNORECASE
-            ):
-                return "Including deleted devices was not requested."
-        elif isinstance(value, list):
-            if not value or not all(
-                isinstance(item, str)
-                and item.strip()
-                and _contains_exact(prompt, item)
-                for item in value
-            ):
-                return f"Every {key} value must appear exactly in the current request."
-        elif isinstance(value, str):
-            if not value.strip() or not _contains_exact(prompt, value):
-                return f"The {key} value must appear exactly in the current request."
-        else:
-            return f"The {key} argument has an unsupported type."
+    if "online_state" in arguments and arguments["online_state"] not in {
+        "Online",
+        "Offline",
+    }:
+        return "online_state must be Online or Offline."
+    if "state" in arguments and arguments["state"] not in {"open", "closed"}:
+        return "Session state must be open or closed."
+    monitoring_detail_tools = {
+        "tv_get_device_hardware_info",
+        "tv_get_device_system_info",
+        "tv_get_device_software_info",
+    }
+    if function_name in monitoring_detail_tools:
+        value = arguments.get("teamviewer_id")
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or not 0 < value <= 9_007_199_254_740_991
+        ):
+            return "A positive JavaScript-safe numeric TeamViewer ID is required."
 
     if function_name in {
         "tv_get_managed_device",
         "tv_get_managed_device_groups",
-        "tv_get_device_hardware_info",
-        "tv_get_device_system_info",
-        "tv_get_device_software_info",
     } and not _canonical_uuid(arguments.get("device_id")):
-        return "A canonical managed or monitored device UUID is required."
-    if (
-        function_name == "tv_list_monitoring_alarms"
-        and "device_id" in arguments
-        and not _canonical_uuid(arguments.get("device_id"))
-    ):
-        return "A canonical monitored device UUID is required."
+        return "A canonical managed-device UUID is required."
 
-    for key in (
-        "session_code",
-        "connection_id",
-        "group_id",
-        "groupid",
-        "device_id",
-        "deviceid",
-        "userid",
-    ):
-        if key in arguments and not _safe_text_identifier(arguments, key):
-            return f"A valid {key} is required."
-    if "rc_session_guid" in arguments and not _canonical_uuid(
-        arguments.get("rc_session_guid")
-    ):
-        return "rc_session_guid must be a canonical UUID."
-    if "account_emails" in arguments and not all(
-        _EMAIL.fullmatch(item) is not None for item in arguments["account_emails"]
-    ):
-        return "Every account_emails value must be a valid email address."
+    if function_name in {
+        "tv_get_connection_report",
+        "tv_get_connection_ai_summary",
+    } and not _canonical_uuid(arguments.get("connection_id")):
+        return "A canonical connection-report UUID is required."
 
-    start = arguments.get("start_date", arguments.get("from_date"))
-    end = arguments.get("end_date", arguments.get("to_date"))
-    if start is not None and end is not None:
-        start_value = _iso_datetime(start)
-        end_value = _iso_datetime(end)
-        if start_value is not None and end_value is not None:
-            try:
-                reversed_range = start_value > end_value
-            except TypeError:
-                return "The date range must use consistent timezone information."
-            if reversed_range:
-                return "The start date must not be after the end date."
+    if function_name == "tv_get_device_group" and re.fullmatch(
+        r"g[0-9]+", str(arguments.get("group_id", "")), re.IGNORECASE
+    ) is None:
+        return "A legacy group ID such as g12345678 is required."
+    if function_name == "tv_get_device" and re.fullmatch(
+        r"d[0-9]+", str(arguments.get("device_id", "")), re.IGNORECASE
+    ) is None:
+        return "A legacy device ID such as d12345678 is required."
+    if "groupid" in arguments and re.fullmatch(
+        r"g[0-9]+", str(arguments["groupid"]), re.IGNORECASE
+    ) is None:
+        return "groupid must be a legacy group ID such as g12345678."
+    if "session_code" in arguments and not _safe_text_identifier(
+        arguments, "session_code"
+    ):
+        return "A valid session code is required."
 
-    if function_name == "tv_list_devices_in_group":
-        value = arguments.get("group_name")
-        if (
-            not isinstance(value, str)
-            or not value.strip()
-            or not _contains_exact(prompt, value)
-        ):
-            return "The exact group name must appear in the current request."
+    if function_name == "tv_list_devices_in_group" and not _nonempty_string(
+        arguments, "group_name"
+    ):
+        return "A non-empty group name is required."
     return None
 
 
@@ -418,30 +390,15 @@ def _validate_write_arguments(
     if function_name == "tv_create_session":
         if not _nonempty_string(arguments, "description"):
             return "A non-empty session description is required."
-        prompt_descriptions = create_session_descriptions(prompt)
-        if (
-            len(prompt_descriptions) != 1
-            or " ".join(str(arguments["description"]).strip().split())
-            != prompt_descriptions[0]
-        ):
-            return "description must match the single explicitly labelled session description."
         if not _nonempty_string(arguments, "groupid") or re.fullmatch(
             r"g[0-9]+", str(arguments["groupid"]), re.IGNORECASE
         ) is None:
             return "groupid must be a TeamViewer legacy group ID such as g12345678."
-        prompt_group_ids = create_session_group_ids(prompt)
-        if (
-            len(prompt_group_ids) != 1
-            or str(arguments["groupid"]).casefold() != prompt_group_ids[0].casefold()
-        ):
-            return "groupid must match the single immediate group ID selector in the request."
     elif function_name == "tv_update_session":
         if not _safe_text_identifier(arguments, "session_code"):
             return "A valid session code is required."
-        if not any(
-            _nonempty_string(arguments, key) for key in ("description", "tag", "notes")
-        ):
-            return "Specify at least one session field to update: description, tag, or notes."
+        if not _nonempty_string(arguments, "description"):
+            return "A non-empty session description is required."
     elif function_name == "tv_delete_session":
         if not _safe_text_identifier(arguments, "session_code"):
             return "A valid session code is required."
@@ -452,14 +409,15 @@ def _validate_write_arguments(
             return "A non-empty managed-device description is required."
     elif function_name == "tv_activate_monitoring":
         value = arguments.get("teamviewer_id")
-        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-            return "A positive numeric TeamViewer ID is required."
-        for key in ("monitoring_policy_id", "patch_management_policy_id"):
-            if key in arguments and not _safe_text_identifier(arguments, key):
-                return f"A valid non-empty {key} is required when supplied."
+        if (
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or not 0 < value <= 9_007_199_254_740_991
+        ):
+            return "A positive JavaScript-safe numeric TeamViewer ID is required."
     elif function_name == "tv_update_connection_report":
-        if not _safe_text_identifier(arguments, "connection_id"):
-            return "A valid connection report ID is required."
+        if not _canonical_uuid(arguments.get("connection_id")):
+            return "A canonical connection-report UUID is required."
         if not _nonempty_string(arguments, "notes"):
             return "Non-empty connection-report notes are required."
 
@@ -469,13 +427,6 @@ def _validate_write_arguments(
                 return f"The {key} value cannot be blank."
             if len(value) > 1000:
                 return f"The {key} value is too long."
-            if not _contains_exact(prompt, value):
-                return f"The {key} value was not explicitly supplied by the user."
-    email = arguments.get("end_customer_email")
-    if email is not None and (
-        not isinstance(email, str) or _EMAIL.fullmatch(email) is None
-    ):
-        return "end_customer_email must be a valid email address."
     return None
 
 
@@ -490,6 +441,9 @@ def validate_invocation(
         return "The model selected a tool that does not match the deterministic route."
 
     error = _validate_contract(function_name, arguments)
+    if error:
+        return error
+    error = _validate_route_binding(route, function_name, arguments)
     if error:
         return error
     error = _validate_identifier_provenance(prompt, arguments)

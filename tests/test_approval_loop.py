@@ -156,7 +156,7 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
             result = await run_turn(
                 runtime,
                 object(),
-                "Close TeamViewer session s123.",
+                "Close TeamViewer session code s123.",
                 self.settings,
             )
 
