@@ -33,14 +33,7 @@ MCP_READ_ONLY_TOOLS: Final[frozenset[str]] = frozenset(
     }
 )
 
-# This application-level composition calls only the official read-only MCP tools above.
-MCP_COMPOSITE_READ_ONLY_TOOLS: Final[frozenset[str]] = frozenset(
-    {"tv_list_devices_in_group"}
-)
-
-READ_ONLY_TOOLS: Final[frozenset[str]] = (
-    MCP_READ_ONLY_TOOLS | MCP_COMPOSITE_READ_ONLY_TOOLS
-)
+READ_ONLY_TOOLS: Final[frozenset[str]] = MCP_READ_ONLY_TOOLS
 
 # Each call to one of these state-changing tools is intercepted by Microsoft Agent
 # Framework and must receive a fresh, explicit human decision.
@@ -83,7 +76,5 @@ def validate_policy() -> None:
         raise ValueError(f"Tools cannot be both read-only and approval-required: {names}")
     if set(ALLOWED_TOOLS) != MCP_READ_ONLY_TOOLS | APPROVAL_REQUIRED_TOOLS:
         raise ValueError("The TeamViewer allow-list does not match the approval policy")
-    if MCP_COMPOSITE_READ_ONLY_TOOLS & set(ALLOWED_TOOLS):
-        raise ValueError("Composite tools must not be added to the upstream MCP allow-list")
     if UNSAFE_DISABLED_TOOLS & set(ALLOWED_TOOLS):
         raise ValueError("Tools with unsafe upstream schemas must not be exposed")

@@ -420,29 +420,5 @@ class ValidationTests(unittest.TestCase):
         )
         self.assertIn("do not match", error or "")
 
-    def test_group_composition_requires_exact_name_provenance(self) -> None:
-        prompt = "Show the devices in SupportGroup."
-        route = route_prompt(prompt)
-        error = validate_invocation(
-            route,
-            prompt,
-            "tv_list_devices_in_group",
-            {"group_name": "Support"},
-        )
-        self.assertIn("does not match", error or "")
-
-    def test_exact_group_name_is_allowed(self) -> None:
-        prompt = "Show devices in managed group SupportGroup."
-        route = route_prompt(prompt)
-        self.assertIsNone(
-            validate_invocation(
-                route,
-                prompt,
-                "tv_list_devices_in_group",
-                {"group_name": "SupportGroup"},
-            )
-        )
-
-
 if __name__ == "__main__":
     unittest.main()

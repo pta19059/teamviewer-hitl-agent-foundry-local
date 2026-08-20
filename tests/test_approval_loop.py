@@ -378,10 +378,66 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("No TeamViewer operation was executed", result)
         self.assertEqual(fake_agent.calls, [])
 
+    async def test_named_group_workflow_uses_only_official_mcp_calls(self) -> None:
+        class FakeMCP:
+            def __init__(self) -> None:
+                self.calls = []
+                self.responses = iter(
+                    [
+                        {"resources": [{"id": "g12345678", "name": "SupportGroup"}]},
+                        {"resources": []},
+                        {
+                            "resources": [
+                                {
+                                    "device_id": "d12345678",
+                                    "alias": "Support-Laptop",
+                                    "remotecontrol_id": "123 456 789",
+                                    "availability": "Online",
+                                }
+                            ]
+                        },
+                    ]
+                )
+
+            async def call_tool(self, name, **arguments):
+                self.calls.append((name, arguments))
+                return [SimpleNamespace(text=json.dumps(next(self.responses)))]
+
+        fake_agent = _FakeAgent()
+        mcp = FakeMCP()
+        runtime = AgentRuntime(fake_agent, {}, teamviewer=mcp)
+
+        result = await run_turn(
+            runtime,
+            object(),
+            "Show the devices in SupportGroup.",
+            self.settings,
+        )
+
+        self.assertEqual(fake_agent.calls, [])
+        self.assertEqual(
+            mcp.calls,
+            [
+                ("tv_list_device_groups", {}),
+                ("tv_list_managed_groups", {}),
+                ("tv_list_devices", {"groupid": "g12345678"}),
+            ],
+        )
+        self.assertIn("Support-Laptop", result)
+        self.assertIn("TeamViewer ID: 123 456 789", result)
+        self.assertIn("availability: Online", result)
+
     def test_raw_foundry_tool_call_marker_is_not_shown_to_the_operator(self) -> None:
         text = (
             '<|tool_call|>[{"name":"tv_get_account","parameters":{}}]'
             "<|/tool_call|>Observed facts"
+        )
+        self.assertEqual(_clean_model_text(text), "Observed facts")
+
+    def test_raw_qwen_tool_call_marker_is_not_shown_to_the_operator(self) -> None:
+        text = (
+            '<tool_call>[{"name":"tv_get_account","parameters":{}}]</tool_call>'
+            "Observed facts"
         )
         self.assertEqual(_clean_model_text(text), "Observed facts")
 

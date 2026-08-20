@@ -18,7 +18,6 @@ from agent_framework import (
     MCPStdioTool,
     MCPStreamableHTTPTool,
     Message,
-    tool,
 )
 from agent_framework.foundry import FoundryChatClient
 from agent_framework.openai import OpenAIChatCompletionClient
@@ -53,11 +52,10 @@ The host supplies only the tool selected by its deterministic route. Do not subs
 operation. When no tool is available, do not claim to have read current TeamViewer data.
 
 TeamViewer has separate legacy "Computers & Contacts" groups and newer managed device groups.
-Use tv_list_devices_in_group when the user asks to list devices belonging to a named group, and
-pass only the exact group name. The host resolves both legacy and managed namespaces and rejects
-ambiguity. A request to create a TeamViewer support session is not a group request. Never claim
-that a device belongs to a group unless the tool result explicitly contains the verified group and
-device list.
+Named-group device lookup is resolved deterministically by the host using only official TeamViewer
+MCP operations. A request to create a TeamViewer support session is not a group request. Never
+claim that a device belongs to a group unless an official MCP result explicitly contains the
+verified group and device list.
 Creating a support session requires exactly one explicit legacy Computers & Contacts group ID.
 Never substitute a managed-device group, and never omit or invent the create-session group ID.
 Session creation supports only description and group ID. Session updates support only description.
@@ -65,12 +63,12 @@ Hardware, system, and software inventory tools use the monitored device's numeri
 Connection-report IDs are UUIDs. Never substitute a short display ID or device ID.
 For managed-group availability, reproduce the tool's availability text exactly: the API cannot
 distinguish a Sleeping device from an Offline device when its isOnline value is false.
-When tv_list_devices_in_group returns status "ok", enumerate every device returned by the
-tool with its name, TeamViewer ID, and availability. Do not omit entries, add recommendations, or
-replace the list with a count unless the user explicitly requests a summary.
 """.strip()
 
-_TOOL_CALL_MARKER = re.compile(r"<\|tool_call\|>.*?<\|/tool_call\|>\s*", re.DOTALL)
+_TOOL_CALL_MARKER = re.compile(
+    r"(?:<\|tool_call\|>.*?<\|/tool_call\|>|<tool_call>.*?</tool_call>)\s*",
+    re.DOTALL,
+)
 _MCP_ADDITIONAL_TOOL_ARGUMENT_NAMES: Final[dict[str, tuple[str, ...]]] = {
     # The pinned official MCP handler forwards this required TeamViewer API field,
     # but its advertised inputSchema omits it. Scope the framework exception to
@@ -89,6 +87,7 @@ class AgentRuntime:
 
     agent: Agent
     tools: dict[str, Any]
+    teamviewer: Any | None = None
 
 
 class InvocationGuard(FunctionMiddleware):
@@ -155,18 +154,67 @@ class InvocationGuard(FunctionMiddleware):
             }
 
 
-def _create_group_device_tool(teamviewer: Any):
-    @tool(approval_mode="never_require")
-    async def tv_list_devices_in_group(group_name: str) -> dict[str, Any]:
-        """List an exact legacy or managed group's devices using TeamViewer MCP only."""
-        return await list_devices_in_group(teamviewer, group_name)
-
-    return tv_list_devices_in_group
-
-
 def _clean_model_text(text: str) -> str:
     """Remove provider-specific raw tool-call markers from user-facing output."""
     return _TOOL_CALL_MARKER.sub("", text).strip()
+
+
+def _device_value(device: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = device.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _format_group_devices(result: dict[str, Any]) -> str:
+    """Render verified MCP group membership without model rewriting."""
+    status = result.get("status")
+    if status == "not_found":
+        return "No TeamViewer group matched the requested name exactly."
+    if status == "ambiguous":
+        matches = result.get("matches", [])
+        lines = ["More than one TeamViewer group matched that exact name:"]
+        for match in matches if isinstance(matches, list) else []:
+            if isinstance(match, dict):
+                lines.append(
+                    f"- {match.get('namespace', 'unknown')}: "
+                    f"{match.get('name', 'Unnamed')} (ID: {match.get('id', 'unknown')})"
+                )
+        lines.append("Specify the legacy or managed group namespace.")
+        return "\n".join(lines)
+    if status != "ok":
+        return "The official TeamViewer MCP group lookup returned no usable result."
+
+    group = result.get("group") if isinstance(result.get("group"), dict) else {}
+    devices = result.get("devices") if isinstance(result.get("devices"), list) else []
+    namespace = result.get("groupNamespace", "unknown")
+    lines = [
+        f"Group: {group.get('name', 'Unnamed')} (ID: {group.get('id', 'unknown')}, "
+        f"namespace: {namespace})",
+        f"Devices: {len(devices)}",
+    ]
+    for device in devices:
+        if not isinstance(device, dict):
+            continue
+        name = _device_value(device, "name", "alias") or "Unnamed"
+        teamviewer_id = _device_value(
+            device, "teamviewerId", "teamviewer_id", "remotecontrol_id"
+        )
+        local_id = _device_value(device, "id", "device_id")
+        availability = _device_value(
+            device, "availability", "online_state", "onlineState"
+        )
+        if availability is None and isinstance(device.get("isOnline"), bool):
+            availability = "Online" if device["isOnline"] else "Offline"
+        identifiers = []
+        if teamviewer_id is not None:
+            identifiers.append(f"TeamViewer ID: {teamviewer_id}")
+        if local_id is not None:
+            identifiers.append(f"device ID: {local_id}")
+        identifiers.append(f"availability: {availability or 'Unknown'}")
+        lines.append(f"- {name} ({', '.join(identifiers)})")
+    return "\n".join(lines)
 
 
 def discover_foundry_local_endpoint(configured_endpoint: str | None = None) -> str:
@@ -316,6 +364,18 @@ async def run_turn(
             options=_continuation_options(),
         )
         return _clean_model_text(result.text)
+
+    if route.outcome == RouteOutcome.HOST:
+        if route.intent != "group_devices" or runtime.teamviewer is None:
+            return "The requested host workflow is unavailable. No TeamViewer operation ran."
+        group_name = dict(route.arguments).get("group_name")
+        if not isinstance(group_name, str) or not group_name.strip():
+            return "A non-empty group name is required. No TeamViewer operation ran."
+        try:
+            result = await list_devices_in_group(runtime.teamviewer, group_name)
+        except Exception:
+            return "The TeamViewer MCP group lookup failed. No success was reported."
+        return _format_group_devices(result)
 
     assert route.tool_name is not None
     selected = runtime.tools.get(route.tool_name)
@@ -473,9 +533,6 @@ async def open_agent(settings: Settings) -> AsyncIterator[AgentRuntime]:
                 registry[read_tool.name] = read_tool
             for write_tool in create_mcp_write_tools(teamviewer):
                 registry[write_tool.name] = write_tool
-            group_tool = _create_group_device_tool(teamviewer)
-            registry[group_tool.name] = group_tool
-
             expected_tools = READ_ONLY_TOOLS | APPROVAL_REQUIRED_TOOLS
             missing = expected_tools - set(registry)
             unexpected = set(registry) - expected_tools
@@ -491,7 +548,7 @@ async def open_agent(settings: Settings) -> AsyncIterator[AgentRuntime]:
                 instructions=AGENT_INSTRUCTIONS,
                 tools=[],
             ) as agent:
-                yield AgentRuntime(agent=agent, tools=registry)
+                yield AgentRuntime(agent=agent, tools=registry, teamviewer=teamviewer)
     finally:
         if credential is not None:
             credential.close()

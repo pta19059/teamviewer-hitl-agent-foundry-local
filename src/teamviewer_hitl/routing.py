@@ -12,6 +12,7 @@ from .policy import APPROVAL_REQUIRED_TOOLS, READ_ONLY_TOOLS, UNSAFE_DISABLED_TO
 
 class RouteOutcome(str, Enum):
     TOOL = "tool"
+    HOST = "host"
     CONVERSATION = "conversation"
     CLARIFY = "clarify"
 
@@ -442,6 +443,15 @@ def _tool_route(
     )
 
 
+def _host_route(intent: str, arguments: dict[str, Any]) -> IntentRoute:
+    """Route deterministic MCP orchestration that exposes no model tool."""
+    return IntentRoute(
+        outcome=RouteOutcome.HOST,
+        intent=intent,
+        arguments=tuple(arguments.items()),
+    )
+
+
 def _availability_arguments(text: str) -> tuple[dict[str, Any] | None, str | None]:
     states = [
         value
@@ -503,18 +513,6 @@ def _explicit_read_arguments(
         if len(states) > 1:
             return None, "Request either open sessions or closed sessions, not both."
         return ({"state": states[0]} if states else None), None
-
-    if tool_name == "tv_list_devices_in_group":
-        explicit = re.search(r"\bgroup\s+name\s+(?P<name>.+)$", text, re.IGNORECASE)
-        match = explicit or _single_pattern_match(_NAMED_GROUP_PATTERNS, text)
-        if match is None:
-            return None, "Supply exactly one explicit group name for the device-list request."
-        group_name = _clean_mutable_value(
-            match.group("name") if explicit else match.group("group_name")
-        )
-        if not group_name:
-            return None, "Supply a non-empty group name."
-        return {"group_name": group_name}, None
 
     if tool_name == "tv_list_device_groups":
         if re.search(r"\b(?:shared|name|owner|permission|group\s+id)\b", lowered):
@@ -765,10 +763,18 @@ def route_prompt(prompt: str) -> IntentRoute:
                 "tv_list_devices",
                 arguments,
             )
-        arguments, error = _explicit_read_arguments("tv_list_devices_in_group", text)
-        return _clarify(error) if error else _tool_route(
-            "group_devices", "tv_list_devices_in_group", arguments
+        explicit = re.search(r"\bgroup\s+name\s+(?P<name>.+)$", text, re.IGNORECASE)
+        match = explicit or _single_pattern_match(_NAMED_GROUP_PATTERNS, text)
+        if match is None:
+            return _clarify(
+                "Supply exactly one explicit group name for the device-list request."
+            )
+        group_name = _clean_mutable_value(
+            match.group("name") if explicit else match.group("group_name")
         )
+        if not group_name:
+            return _clarify("Supply a non-empty group name.")
+        return _host_route("group_devices", {"group_name": group_name})
     if "managed group" in lowered:
         if any(word in lowered for word in ("list", "groups", "all")):
             return _tool_route("managed_groups", "tv_list_managed_groups")

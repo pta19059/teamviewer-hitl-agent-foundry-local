@@ -24,11 +24,12 @@ the primary setup documented below.
 - Records approvals and rejections in `.audit/teamviewer-approvals.jsonl`.
 - Hides high-risk TeamViewer administration tools from the model entirely.
 
-The upstream MCP connection allows 30 TeamViewer operations: 24 reads and 6 writes. The model never
-sees all of them together. It receives no tool for conversation, or exactly one route-selected
-tool for an operational request. The six application-level write wrappers have strict schemas and
-call only their identically named official MCP operations. Policy assignment is temporarily
-disabled because the current upstream `assignments` schema is not sufficiently typed.
+The upstream MCP connection allows 30 TeamViewer operations: 24 reads and 6 writes. Every
+model-visible tool name is published by the pinned official TeamViewer MCP server. The model never
+sees all tools together: it receives no tool for conversation, or exactly one route-selected tool
+for an operational request. The six application-level write adapters have strict schemas and call
+only their identically named official MCP operations. Policy assignment is temporarily disabled
+because the current upstream `assignments` schema is not sufficiently typed.
 
 ## Architecture and approval boundary
 
@@ -48,9 +49,9 @@ Deterministic host router
                                          |-- APPROVE -> validate again -> MCP
                                          `-- anything else -> reject
 
-Named-group read ----------------> resolve legacy + managed namespaces through MCP
+Named-group read ----------------> host resolves legacy + managed namespaces through MCP
                                     -> reject no-match or ambiguity
-                                    -> return only verified membership
+                                    -> deterministic formatting of verified membership
 ```
 
 This approval gate supplements TeamViewer token scopes; it does not replace them. Keep the
@@ -61,10 +62,10 @@ TeamViewer token narrowly scoped and review the allow-list with `--show-policy`.
 Every account, device, group, monitoring, report, and session operation crosses the configured
 official TeamViewer MCP transport. The Python host contains no TeamViewer Web API URL and no direct
 HTTP client for TeamViewer. Typed write wrappers call `teamviewer.call_tool` with the same official
-MCP tool name; typed read adapters and the group resolver compose only read-only
-`teamviewer.call_tool` calls. Ordinary
-conversation can still initialize the MCP connection at application startup, but it performs no
-TeamViewer data operation and exposes no tool to the model.
+MCP tool name; typed read adapters and the named-group host workflow compose only read-only
+`teamviewer.call_tool` calls. The named-group workflow is not exposed as an invented model tool.
+Ordinary conversation can still initialize the MCP connection at application startup, but it
+performs no TeamViewer data operation and exposes no tool to the model.
 
 ## Prerequisites
 
@@ -344,8 +345,10 @@ Type APPROVE to execute this exact call. Any other response rejects it.
 For a rejection-path test, type anything other than `APPROVE`. For an execution test, verify the
 target and arguments carefully and then type exactly `APPROVE`.
 
-The host pins every supported operational prompt to one exact tool, for both Foundry Local and the
-cloud provider. The model cannot substitute a group lookup, monitoring call, or any other tool.
+The host pins every supported model-driven operational prompt to one exact official tool, for both
+Foundry Local and the cloud provider. Named-group lookup is a deterministic host workflow over
+official MCP tools and exposes no model tool. The model cannot substitute a group lookup,
+monitoring call, or any other operation.
 For a write, the host also binds the approved tool name and canonical arguments to the continuation;
 any post-approval change is blocked before MCP execution.
 
@@ -547,13 +550,18 @@ If the provider returns prose without executing the required MCP read, the host 
 and reports that no live data is available. Keep prompts explicit and request one operation at a
 time. Run the test suite if this behavior regresses.
 
+Qwen may duplicate a valid structured function call inside a textual
+`<tool_call>...</tool_call>` envelope. Phi variants may use
+`<|tool_call|>...<|/tool_call|>`. The host removes both provider-specific envelopes from operator
+output; neither textual form counts as execution. Only invocation middleware confirms execution.
+
 ### A named group returns unrelated devices
 
 TeamViewer has two separate inventory models:
 
 - `tv_list_device_groups` and `tv_list_devices` read legacy Computers & Contacts groups.
-- `tv_list_devices_in_group` is the application-level resolver. It searches both namespaces using
-  the official MCP server, matches the name exactly, and rejects ambiguity. For a managed group it
+- The deterministic host workflow searches both namespaces using the official MCP server, matches
+  the name exactly, and rejects ambiguity. It is not a model-visible tool. For a managed group it
   verifies membership by composing `tv_list_managed_groups`,
   `tv_list_company_managed_devices`, and `tv_get_managed_device_groups`. For a legacy group it
   composes `tv_list_device_groups` and `tv_list_devices`.
@@ -600,9 +608,9 @@ The pinned `TV_Remote_MCP` revision is verified by this project over local stdio
 that branch directly as `TEAMVIEWER_MCP_URL`; remote mode requires a conformant Streamable HTTP MCP
 deployment or adapter.
 
-The `tv_list_devices_in_group` composition works with both local stdio and remote HTTP MCP
-transports. It never calls TeamViewer Web API directly from Python; every TeamViewer request crosses
-the configured MCP transport.
+The named-group host workflow works with both local stdio and remote HTTP MCP transports. It never
+calls TeamViewer Web API directly from Python; every TeamViewer request crosses the configured MCP
+transport.
 
 ## Data locality
 

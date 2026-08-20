@@ -1,9 +1,10 @@
+import re
 import unittest
+from pathlib import Path
 
 from teamviewer_hitl.policy import (
     ALLOWED_TOOLS,
     APPROVAL_REQUIRED_TOOLS,
-    MCP_COMPOSITE_READ_ONLY_TOOLS,
     MCP_APPROVAL_MODE,
     READ_ONLY_TOOLS,
     UNSAFE_DISABLED_TOOLS,
@@ -36,16 +37,16 @@ class PolicyTests(unittest.TestCase):
         )
         self.assertTrue(UNSAFE_DISABLED_TOOLS.isdisjoint(ALLOWED_TOOLS))
 
-    def test_group_composition_is_mcp_only_and_read_only(self) -> None:
-        name = "tv_list_devices_in_group"
-        self.assertIn(name, MCP_COMPOSITE_READ_ONLY_TOOLS)
-        self.assertIn(name, READ_ONLY_TOOLS)
-        self.assertNotIn(name, ALLOWED_TOOLS)
-        self.assertIn("tv_list_managed_groups", ALLOWED_TOOLS)
-        self.assertIn("tv_list_company_managed_devices", ALLOWED_TOOLS)
-        self.assertIn("tv_get_managed_device_groups", ALLOWED_TOOLS)
-        self.assertIn("tv_list_device_groups", ALLOWED_TOOLS)
-        self.assertIn("tv_list_devices", ALLOWED_TOOLS)
+    def test_every_model_visible_tool_is_published_by_official_mcp(self) -> None:
+        tools_root = Path("external/TV_Remote_MCP/src/tools")
+        published = set()
+        for source in tools_root.glob("*.ts"):
+            published.update(
+                re.findall(r'name:\s*"(tv_[a-z0-9_]+)"', source.read_text(encoding="utf-8"))
+            )
+        self.assertTrue(published)
+        self.assertTrue(set(ALLOWED_TOOLS).issubset(published))
+        self.assertNotIn("tv_list_devices_in_group", ALLOWED_TOOLS)
 
     def test_high_risk_admin_tools_are_not_exposed(self) -> None:
         forbidden = {

@@ -10,6 +10,12 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(route.tool_name, expected, prompt)
         self.assertEqual(route.mutating, mutating, prompt)
 
+    def assert_host(self, prompt: str, intent: str) -> None:
+        route = route_prompt(prompt)
+        self.assertEqual(route.outcome, RouteOutcome.HOST, prompt)
+        self.assertEqual(route.intent, intent, prompt)
+        self.assertIsNone(route.tool_name, prompt)
+
     def test_non_operational_and_informational_prompts_use_no_tool(self) -> None:
         for prompt in (
             "Hello",
@@ -129,7 +135,6 @@ class RoutingTests(unittest.TestCase):
             "Show my account summary.": "tv_get_account",
             "Show the company license.": "tv_get_company_license",
             "Show company-managed online devices.": "tv_list_company_managed_devices",
-            "Show the devices in SupportGroup.": "tv_list_devices_in_group",
             "List all TeamViewer sessions.": "tv_list_sessions",
             "List monitoring alarms.": "tv_list_monitoring_alarms",
             "List connection reports.": "tv_list_connection_reports",
@@ -137,6 +142,7 @@ class RoutingTests(unittest.TestCase):
         for prompt, expected in cases.items():
             with self.subTest(prompt=prompt):
                 self.assert_tool(prompt, expected)
+        self.assert_host("Show the devices in SupportGroup.", "group_devices")
 
     def test_explicit_allowed_tool_is_supported(self) -> None:
         self.assert_tool("Use only tv_get_account.", "tv_get_account")
@@ -166,8 +172,6 @@ class RoutingTests(unittest.TestCase):
 
     def test_additional_read_word_orders_are_deterministic(self) -> None:
         cases = {
-            "List devices belonging to SupportGroup.": "tv_list_devices_in_group",
-            "List SupportGroup devices.": "tv_list_devices_in_group",
             (
                 "Which groups contain managed device ID "
                 "550e8400-e29b-41d4-a716-446655440000?"
@@ -189,6 +193,9 @@ class RoutingTests(unittest.TestCase):
         for prompt, expected in cases.items():
             with self.subTest(prompt=prompt):
                 self.assert_tool(prompt, expected)
+
+        self.assert_host("List devices belonging to SupportGroup.", "group_devices")
+        self.assert_host("List SupportGroup devices.", "group_devices")
 
         group_route = route_prompt("Show the devices in SupportGroup.")
         self.assertEqual(dict(group_route.arguments), {"group_name": "SupportGroup"})

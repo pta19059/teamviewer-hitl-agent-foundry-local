@@ -80,10 +80,6 @@ _READ_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset({"session_code"}),
         frozenset({"session_code"}),
     ),
-    "tv_list_devices_in_group": (
-        frozenset({"group_name"}),
-        frozenset({"group_name"}),
-    ),
 }
 
 _WRITE_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
@@ -160,7 +156,6 @@ _ROUTE_BOUND_READ_FIELDS: dict[str, frozenset[str]] = {
     "tv_list_managed_devices": frozenset({"online_state"}),
     "tv_list_company_managed_devices": frozenset({"online_state"}),
     "tv_list_sessions": frozenset({"state"}),
-    "tv_list_devices_in_group": frozenset({"group_name"}),
 }
 _DATE_RANGE = re.compile(
     r"\bfrom\s+(?P<start>\S+)\s+to\s+(?P<end>\S+)", re.IGNORECASE
@@ -377,10 +372,6 @@ def _validate_read_arguments(
     ):
         return "A valid session code is required."
 
-    if function_name == "tv_list_devices_in_group" and not _nonempty_string(
-        arguments, "group_name"
-    ):
-        return "A non-empty group name is required."
     return None
 
 
