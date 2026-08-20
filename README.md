@@ -13,13 +13,16 @@ the primary setup documented below.
 - Reads TeamViewer account, device, group, monitoring, session, report, and event-log data.
 - Uses a local `phi-4-mini` model through Foundry Local for prompt processing and tool selection.
 - Connects to TeamViewer's official MCP server over local stdio.
+- Adds one narrow read-only managed-group composition built exclusively from official TeamViewer
+  MCP tools.
 - Requires a fresh human decision before every allowed state-changing MCP call.
 - Records approvals and rejections in `.audit/teamviewer-approvals.jsonl`.
 - Hides high-risk TeamViewer administration tools from the model entirely.
 
-The current policy exposes 31 of the TeamViewer MCP server's tools. Operations such as account
-creation, user deletion, TFA deactivation, permanent-token management, device deletion, and
-policy deletion are not available to the agent.
+The current policy exposes 32 of the TeamViewer MCP server's tools plus one application-level
+read-only composition that calls only those MCP tools. Operations such as account creation, user
+deletion, TFA deactivation, permanent-token management, device deletion, and policy deletion are
+not available to the agent.
 
 ## Architecture and approval boundary
 
@@ -37,6 +40,11 @@ TeamViewer MCP allow-list
                                       |
                                       `-- APPROVE -> execute
                                           anything else -> reject
+
+Managed-group query -------------> exact group-name resolution via TeamViewer MCP
+                                    -> company devices via TeamViewer MCP
+                                    -> device group membership via TeamViewer MCP
+                                    -> return verified membership
 ```
 
 This approval gate supplements TeamViewer token scopes; it does not replace them. Keep the
@@ -260,6 +268,15 @@ Test the online device list:
 .\.venv\Scripts\teamviewer-hitl.exe "Use only tv_list_devices with online_state Online and list the online TeamViewer devices."
 ```
 
+Test a newer managed device group by exact name:
+
+```powershell
+.\.venv\Scripts\teamviewer-hitl.exe "Use tv_list_devices_in_managed_group to show the devices in StefanoGroup."
+```
+
+Do not use `tv_list_devices` for a group displayed in TeamViewer's newer managed-device hierarchy.
+That tool reads the separate legacy Computers & Contacts inventory.
+
 Run an interactive session:
 
 ```powershell
@@ -393,6 +410,19 @@ This project requires the first tool selection for Foundry Local so that `phi-4-
 structured call instead of merely describing one. Keep prompts explicit and request one operation
 at a time for the most predictable local-model behavior.
 
+### A named group returns unrelated devices
+
+TeamViewer has two separate inventory models:
+
+- `tv_list_device_groups` and `tv_list_devices` read legacy Computers & Contacts groups.
+- `tv_list_devices_in_managed_group` resolves the newer managed group and verifies membership by
+  composing the official `tv_list_managed_groups`, `tv_list_company_managed_devices`, and
+  `tv_get_managed_device_groups` MCP tools.
+
+For a group shown in the modern managed-device hierarchy, use the managed-group composition. It
+matches the group name exactly, rejects ambiguous names, follows pagination, and returns only the
+membership supplied by TeamViewer.
+
 ## Cloud Microsoft Foundry option
 
 Set the following values instead of the Foundry Local settings:
@@ -426,15 +456,20 @@ TEAMVIEWER_MCP_BEARER_TOKEN=YOUR_MCP_SERVER_BEARER_TOKEN
 Use HTTPS outside localhost. `TEAMVIEWER_MCP_BEARER_TOKEN` protects access to your MCP server; it
 is separate from the TeamViewer API token used by that server.
 
+The `tv_list_devices_in_managed_group` composition works with both local stdio and remote HTTP MCP
+transports. It never calls TeamViewer Web API directly from Python; every TeamViewer request crosses
+the configured MCP transport.
+
 ## Data locality
 
 With `MODEL_PROVIDER=foundry_local`, prompts, inference, conversation history, and tool-selection
 reasoning run through the model on the local machine. The Agent Framework host and HITL gate also
 run locally.
 
-The solution is not fully offline. TeamViewer MCP calls still use TeamViewer Web API, and returned
-TeamViewer data is passed to the local model to formulate an answer. Foundry Local also requires
-internet access for initial model and execution-provider downloads.
+The solution is not fully offline. The TeamViewer MCP server still calls TeamViewer Web API, and
+returned TeamViewer data is passed to the local model to formulate an answer. The Python agent host
+does not call TeamViewer Web API directly. Foundry Local also requires internet access for initial
+model and execution-provider downloads.
 
 ## Production hardening
 

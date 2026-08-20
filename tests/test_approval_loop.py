@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from agent_framework import Content, Message
 
-from teamviewer_hitl.agent import run_turn
+from teamviewer_hitl.agent import _clean_model_text, run_turn
 
 
 class _FakeAgent:
@@ -68,6 +68,13 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
 
         continuation = fake_agent.inputs[1][0]
         self.assertFalse(continuation.contents[0].approved)
+
+    def test_raw_foundry_tool_call_marker_is_not_shown_to_the_operator(self) -> None:
+        text = (
+            '<|tool_call|>[{"name":"tv_get_account","parameters":{}}]'
+            "<|/tool_call|>Observed facts"
+        )
+        self.assertEqual(_clean_model_text(text), "Observed facts")
 
 
 if __name__ == "__main__":
