@@ -301,10 +301,23 @@ Test account access:
 teamviewer-hitl "Show my TeamViewer account summary."
 ```
 
-Test the online device list:
+Test the combined online device list. This reads both the legacy Computers & Contacts inventory
+and the company-managed inventory through official MCP tools, then displays separate sections:
 
 ```powershell
 teamviewer-hitl "List the online TeamViewer devices."
+```
+
+Request only the legacy Computers & Contacts namespace:
+
+```powershell
+teamviewer-hitl "List the online legacy TeamViewer devices."
+```
+
+Request only the company-managed namespace:
+
+```powershell
+teamviewer-hitl "List the online company-managed TeamViewer devices."
 ```
 
 Test a group by exact name. The resolver checks both legacy Computers & Contacts groups and managed
