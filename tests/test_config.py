@@ -19,7 +19,7 @@ class SettingsTests(unittest.TestCase):
         env = {
             **_TEAMVIEWER_LOCAL_ENV,
             "MODEL_PROVIDER": "foundry_local",
-            "FOUNDRY_LOCAL_MODEL": "phi-4-mini",
+            "FOUNDRY_LOCAL_MODEL": "qwen2.5-7b",
             # Keep this unit test independent from a developer's local .env override.
             "FOUNDRY_LOCAL_ENDPOINT": "",
         }
@@ -27,7 +27,7 @@ class SettingsTests(unittest.TestCase):
             settings = Settings.from_env()
 
         self.assertEqual(settings.model_provider, "foundry_local")
-        self.assertEqual(settings.foundry_local_model, "phi-4-mini")
+        self.assertEqual(settings.foundry_local_model, "qwen2.5-7b")
         self.assertIsNone(settings.foundry_local_endpoint)
         self.assertIsNone(settings.foundry_project_endpoint)
 

@@ -11,8 +11,8 @@ the primary setup documented below.
 ## What this project does
 
 - Reads TeamViewer account, device, group, monitoring, session, report, and event-log data.
-- Uses a local `phi-4-mini` model through Foundry Local for response generation and exact
-  argument preparation.
+- Uses the local tool-capable `qwen2.5-7b` model through Foundry Local for response generation
+  and exact argument preparation.
 - Connects to TeamViewer's official MCP server over local stdio.
 - Routes each prompt deterministically before the model runs and exposes at most one operation.
 - Uses typed MCP-only read adapters for API-compatible identifiers, filters, and pagination.
@@ -196,7 +196,7 @@ For Foundry Local and a local TeamViewer MCP process, configure at least:
 
 ```dotenv
 MODEL_PROVIDER=foundry_local
-FOUNDRY_LOCAL_MODEL=phi-4-mini
+FOUNDRY_LOCAL_MODEL=qwen2.5-7b
 FOUNDRY_LOCAL_ENDPOINT=
 
 TEAMVIEWER_MCP_TRANSPORT=local
@@ -221,9 +221,9 @@ Foundry Local CLI 0.10.x, which this project has been tested against, uses `serv
 
 ```powershell
 foundry server start
-foundry model info phi-4-mini
-foundry model download phi-4-mini
-foundry model load phi-4-mini
+foundry model info qwen2.5-7b
+foundry model download qwen2.5-7b
+foundry model load qwen2.5-7b
 foundry server status
 ```
 
@@ -232,9 +232,9 @@ Newer Foundry Local documentation uses `service`. If `foundry --help` lists `ser
 
 ```powershell
 foundry service start
-foundry model info phi-4-mini
-foundry model download phi-4-mini
-foundry model load phi-4-mini
+foundry model info qwen2.5-7b
+foundry model download qwen2.5-7b
+foundry model load qwen2.5-7b
 foundry service status
 ```
 
@@ -282,8 +282,8 @@ The tests do not call TeamViewer or Microsoft Foundry cloud services.
 
 ### 8. Run read-only live tests
 
-Start with one TeamViewer operation per prompt. This is especially reliable with the small local
-`phi-4-mini` model.
+Start with one TeamViewer operation per prompt. This keeps routing and argument validation
+predictable when using the local `qwen2.5-7b` model.
 
 Test account access:
 
