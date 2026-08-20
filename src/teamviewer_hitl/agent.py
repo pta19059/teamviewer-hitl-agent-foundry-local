@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
@@ -17,6 +18,7 @@ from azure.identity import AzureCliCredential
 from .audit import record_decision
 from .config import Settings
 from .policy import ALLOWED_TOOLS, MCP_APPROVAL_MODE, validate_policy
+from .mcp_compositions import list_devices_in_managed_group
 
 AGENT_INSTRUCTIONS = """
 You are a careful TeamViewer service-desk assistant.
@@ -28,7 +30,32 @@ target and expected effect in one concise sentence; the host application will in
 the operator for approval. A rejection is final for that call: acknowledge it and offer a safe
 alternative. Never ask for, display, or store passwords, API tokens, client secrets, or unattended
 access credentials. Do not infer a device ID when more than one device matches a name.
+
+TeamViewer has separate legacy "Computers & Contacts" groups and newer managed device groups.
+When the user names a managed group, use tv_list_devices_in_managed_group and pass the exact group
+name. Do not use tv_list_devices for a managed-group request. Never claim that a device belongs to
+a group unless the tool result explicitly contains the verified group and device list.
+For managed-group availability, reproduce the tool's availability text exactly: the API cannot
+distinguish a Sleeping device from an Offline device when its isOnline value is false.
+When tv_list_devices_in_managed_group returns status "ok", enumerate every device returned by the
+tool with its name, TeamViewer ID, and availability. Do not omit entries, add recommendations, or
+replace the list with a count unless the user explicitly requests a summary.
 """.strip()
+
+_TOOL_CALL_MARKER = re.compile(r"<\|tool_call\|>.*?<\|/tool_call\|>\s*", re.DOTALL)
+
+
+def _create_managed_group_device_tool(teamviewer: Any):
+    async def tv_list_devices_in_managed_group(group_name: str) -> dict[str, Any]:
+        """List an exact managed group's devices using only official TeamViewer MCP tools."""
+        return await list_devices_in_managed_group(teamviewer, group_name)
+
+    return tv_list_devices_in_managed_group
+
+
+def _clean_model_text(text: str) -> str:
+    """Remove provider-specific raw tool-call markers from user-facing output."""
+    return _TOOL_CALL_MARKER.sub("", text).strip()
 
 
 def discover_foundry_local_endpoint(configured_endpoint: str | None = None) -> str:
@@ -145,7 +172,7 @@ async def run_turn(agent: Agent, session: Any, prompt: str, settings: Settings) 
 
         result = await agent.run(Message(role="user", contents=responses), session=session)
 
-    return result.text
+    return _clean_model_text(result.text)
 
 
 @asynccontextmanager
@@ -170,11 +197,13 @@ async def open_agent(settings: Settings) -> AsyncIterator[Agent]:
                     model=settings.foundry_model,
                     credential=credential,
                 )
+            tools: list[Any] = [teamviewer, _create_managed_group_device_tool(teamviewer)]
+
             async with Agent(
                 client=client,
                 name="TeamViewerServiceDesk",
                 instructions=AGENT_INSTRUCTIONS,
-                tools=teamviewer,
+                tools=tools,
                 # Phi-4-mini on Foundry Local can describe an available tool instead of
                 # emitting a structured call when selection is left on "auto". Requiring
                 # the first call keeps service-desk answers grounded in TeamViewer data.

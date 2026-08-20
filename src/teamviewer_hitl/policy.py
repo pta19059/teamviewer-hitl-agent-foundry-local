@@ -4,7 +4,7 @@ from typing import Final
 
 # Discovery and investigation may run without an approval interruption. These tools
 # should not change TeamViewer state.
-READ_ONLY_TOOLS: Final[frozenset[str]] = frozenset(
+MCP_READ_ONLY_TOOLS: Final[frozenset[str]] = frozenset(
     {
         "tv_get_account",
         "tv_get_company",
@@ -18,6 +18,7 @@ READ_ONLY_TOOLS: Final[frozenset[str]] = frozenset(
         "tv_list_company_managed_devices",
         "tv_get_managed_device",
         "tv_get_managed_device_groups",
+        "tv_list_managed_groups",
         "tv_list_monitoring_alarms",
         "tv_list_monitoring_devices",
         "tv_get_device_hardware_info",
@@ -30,6 +31,15 @@ READ_ONLY_TOOLS: Final[frozenset[str]] = frozenset(
         "tv_list_sessions",
         "tv_get_session",
     }
+)
+
+# This application-level composition calls only the official read-only MCP tools above.
+MCP_COMPOSITE_READ_ONLY_TOOLS: Final[frozenset[str]] = frozenset(
+    {"tv_list_devices_in_managed_group"}
+)
+
+READ_ONLY_TOOLS: Final[frozenset[str]] = (
+    MCP_READ_ONLY_TOOLS | MCP_COMPOSITE_READ_ONLY_TOOLS
 )
 
 # Each call to one of these state-changing tools is intercepted by Microsoft Agent
@@ -48,12 +58,12 @@ APPROVAL_REQUIRED_TOOLS: Final[frozenset[str]] = frozenset(
 )
 
 ALLOWED_TOOLS: Final[tuple[str, ...]] = tuple(
-    sorted(READ_ONLY_TOOLS | APPROVAL_REQUIRED_TOOLS)
+    sorted(MCP_READ_ONLY_TOOLS | APPROVAL_REQUIRED_TOOLS)
 )
 
 MCP_APPROVAL_MODE: Final[dict[str, tuple[str, ...]]] = {
     "always_require_approval": tuple(sorted(APPROVAL_REQUIRED_TOOLS)),
-    "never_require_approval": tuple(sorted(READ_ONLY_TOOLS)),
+    "never_require_approval": tuple(sorted(MCP_READ_ONLY_TOOLS)),
 }
 
 
@@ -63,5 +73,7 @@ def validate_policy() -> None:
     if overlap:
         names = ", ".join(sorted(overlap))
         raise ValueError(f"Tools cannot be both read-only and approval-required: {names}")
-    if set(ALLOWED_TOOLS) != READ_ONLY_TOOLS | APPROVAL_REQUIRED_TOOLS:
+    if set(ALLOWED_TOOLS) != MCP_READ_ONLY_TOOLS | APPROVAL_REQUIRED_TOOLS:
         raise ValueError("The TeamViewer allow-list does not match the approval policy")
+    if MCP_COMPOSITE_READ_ONLY_TOOLS & set(ALLOWED_TOOLS):
+        raise ValueError("Composite tools must not be added to the upstream MCP allow-list")
