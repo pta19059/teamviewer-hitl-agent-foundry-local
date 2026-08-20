@@ -413,11 +413,24 @@ These examples are intentionally explicit. Submit one operation at a time.
 # No TeamViewer call
 teamviewer-hitl "Hello"
 
-# Read-only MCP calls
+# Read-only requests using official MCP tools only
 teamviewer-hitl "Show my TeamViewer account summary."
+
+# Combined inventory: legacy Computers & Contacts + company-managed devices
 teamviewer-hitl "List the online TeamViewer devices."
+
+# One inventory namespace only
+teamviewer-hitl "List the online legacy TeamViewer devices."
+teamviewer-hitl "List the online company-managed TeamViewer devices."
+
+# Exact-name group lookup across legacy and managed group namespaces
 teamviewer-hitl "Show the devices in SupportGroup."
-teamviewer-hitl "List all device groups."
+
+# Group inventories
+teamviewer-hitl "List all legacy device groups."
+teamviewer-hitl "List all managed device groups."
+
+# Additional read-only examples
 teamviewer-hitl "List all TeamViewer sessions."
 teamviewer-hitl "List closed TeamViewer sessions."
 teamviewer-hitl "Get TeamViewer session code s123."
