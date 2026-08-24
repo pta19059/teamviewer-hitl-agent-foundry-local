@@ -1,6 +1,7 @@
 import json
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from teamviewer_hitl.mcp_compositions import (
     TeamViewerMCPReadError,
@@ -18,6 +19,8 @@ class _FakeMCP:
     async def call_tool(self, name, **arguments):
         self.calls.append((name, arguments))
         payload = next(self.responses)
+        if isinstance(payload, Exception):
+            raise payload
         return [SimpleNamespace(text=json.dumps(payload))]
 
 
@@ -110,6 +113,62 @@ class TeamViewerManagedGroupMCPTests(unittest.IsolatedAsyncioTestCase):
             mcp.calls[2],
             ("tv_list_company_managed_devices", {"pagination_token": "next-page"}),
         )
+
+    async def test_transient_membership_failure_is_retried_and_recovers(self) -> None:
+        group_id = "group-1"
+        mcp = _FakeMCP(
+            [
+                {"resources": [{"id": group_id, "name": "SupportGroup"}]},
+                {"resources": [{"id": "device-1", "name": "Laptop"}]},
+                TimeoutError("temporary"),
+                {"resources": [{"id": group_id}]},
+            ]
+        )
+
+        with patch(
+            "teamviewer_hitl.mcp_compositions.asyncio.sleep", new_callable=AsyncMock
+        ):
+            result = await list_devices_in_managed_group(mcp, "SupportGroup")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["deviceCount"], 1)
+        self.assertEqual(
+            [name for name, _ in mcp.calls].count("tv_get_managed_device_groups"),
+            2,
+        )
+
+    async def test_exhausted_membership_retry_returns_explicit_partial_result(self) -> None:
+        group_id = "group-1"
+        sensitive_message = "TEAMVIEWER_API_TOKEN=do-not-display"
+        mcp = _FakeMCP(
+            [
+                {"resources": [{"id": group_id, "name": "SupportGroup"}]},
+                {
+                    "resources": [
+                        {"id": "device-1", "name": "Unavailable Laptop"},
+                        {"id": "device-2", "name": "Verified Laptop"},
+                    ]
+                },
+                RuntimeError(sensitive_message),
+                RuntimeError(sensitive_message),
+                RuntimeError(sensitive_message),
+                {"resources": [{"id": group_id}]},
+            ]
+        )
+
+        with patch(
+            "teamviewer_hitl.mcp_compositions.asyncio.sleep", new_callable=AsyncMock
+        ), self.assertLogs("teamviewer_hitl.mcp_compositions", level="WARNING") as logs:
+            result = await list_devices_in_managed_group(mcp, "SupportGroup")
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["deviceCount"], 1)
+        self.assertEqual(
+            result["failedMembershipChecks"],
+            [{"id": "device-1", "name": "Unavailable Laptop"}],
+        )
+        self.assertNotIn(sensitive_message, "\n".join(logs.output))
+        self.assertIn("error_type=RuntimeError", "\n".join(logs.output))
 
 
 class TeamViewerGroupResolverMCPTests(unittest.IsolatedAsyncioTestCase):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -37,6 +38,9 @@ from .read_tools import create_mcp_read_tools
 from .routing import IntentRoute, RouteOutcome, route_prompt
 from .validation import arguments_to_dict, validate_invocation
 from .write_tools import create_mcp_write_tools
+
+
+logger = logging.getLogger(__name__)
 
 AGENT_INSTRUCTIONS = """
 You are a careful TeamViewer service-desk assistant.
@@ -183,7 +187,7 @@ def _format_group_devices(result: dict[str, Any]) -> str:
                 )
         lines.append("Specify the legacy or managed group namespace.")
         return "\n".join(lines)
-    if status != "ok":
+    if status not in {"ok", "partial"}:
         return "The official TeamViewer MCP group lookup returned no usable result."
 
     group = result.get("group") if isinstance(result.get("group"), dict) else {}
@@ -194,6 +198,14 @@ def _format_group_devices(result: dict[str, Any]) -> str:
         f"namespace: {namespace})",
         f"Devices: {len(devices)}",
     ]
+    if status == "partial":
+        failures = result.get("failedMembershipChecks")
+        failure_count = len(failures) if isinstance(failures, list) else 0
+        lines.append(
+            "Warning: membership verification was incomplete for "
+            f"{failure_count} company-managed device(s) after bounded retries. "
+            "Only devices whose membership was verified through MCP are shown."
+        )
     for device in devices:
         if not isinstance(device, dict):
             continue
@@ -423,7 +435,12 @@ async def run_turn(
                 result = await list_devices_across_namespaces(
                     runtime.teamviewer, online_state
                 )
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "TeamViewer MCP host workflow failed: workflow=all_devices "
+                    "error_type=%s",
+                    type(exc).__name__,
+                )
                 return "The TeamViewer MCP inventory lookup failed. No success was reported."
             return _format_all_devices(result)
         if route.intent != "group_devices":
@@ -433,7 +450,12 @@ async def run_turn(
             return "A non-empty group name is required. No TeamViewer operation ran."
         try:
             result = await list_devices_in_group(runtime.teamviewer, group_name)
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "TeamViewer MCP host workflow failed: workflow=group_devices "
+                "error_type=%s",
+                type(exc).__name__,
+            )
             return "The TeamViewer MCP group lookup failed. No success was reported."
         return _format_group_devices(result)
 

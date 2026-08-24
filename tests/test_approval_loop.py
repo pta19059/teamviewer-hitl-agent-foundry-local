@@ -10,6 +10,7 @@ from teamviewer_hitl.agent import (
     AgentRuntime,
     InvocationGuard,
     _clean_model_text,
+    _format_group_devices,
     run_turn,
 )
 from teamviewer_hitl.routing import route_prompt
@@ -71,6 +72,23 @@ class ApprovalLoopTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self) -> None:
         self.audit_path.unlink(missing_ok=True)
+
+    def test_partial_group_result_is_disclosed_without_claiming_completeness(self) -> None:
+        rendered = _format_group_devices(
+            {
+                "status": "partial",
+                "groupNamespace": "managed",
+                "group": {"id": "group-1", "name": "SupportGroup"},
+                "devices": [{"id": "device-2", "name": "Verified Laptop"}],
+                "failedMembershipChecks": [
+                    {"id": "device-1", "name": "Unavailable Laptop"}
+                ],
+            }
+        )
+
+        self.assertIn("membership verification was incomplete", rendered)
+        self.assertIn("Only devices whose membership was verified", rendered)
+        self.assertIn("Verified Laptop", rendered)
 
     async def test_approved_call_uses_only_the_routed_tool_and_is_audited(self) -> None:
         function_call = Content.from_function_call(

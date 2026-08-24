@@ -2,8 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
+
+_MCP_READ_ATTEMPTS = 3
+_MCP_READ_RETRY_DELAY_SECONDS = 0.25
 
 
 class TeamViewerMCPReadError(RuntimeError):
@@ -29,6 +37,30 @@ def _decode_mcp_json(result: Any, tool_name: str) -> dict[str, Any]:
     return payload
 
 
+async def _read_mcp_json(
+    teamviewer: Any, tool_name: str, **arguments: Any
+) -> dict[str, Any]:
+    """Run a bounded MCP read and log only sanitized failure metadata."""
+    for attempt in range(1, _MCP_READ_ATTEMPTS + 1):
+        try:
+            result = await teamviewer.call_tool(tool_name, **arguments)
+            return _decode_mcp_json(result, tool_name)
+        except Exception as exc:
+            logger.warning(
+                "TeamViewer MCP read failed: tool=%s attempt=%d/%d error_type=%s",
+                tool_name,
+                attempt,
+                _MCP_READ_ATTEMPTS,
+                type(exc).__name__,
+            )
+            if attempt < _MCP_READ_ATTEMPTS:
+                await asyncio.sleep(_MCP_READ_RETRY_DELAY_SECONDS * attempt)
+
+    raise TeamViewerMCPReadError(
+        f"{tool_name} failed after {_MCP_READ_ATTEMPTS} attempts"
+    )
+
+
 def _resources(payload: dict[str, Any], tool_name: str) -> list[dict[str, Any]]:
     resources = payload.get("resources")
     if not isinstance(resources, list):
@@ -50,10 +82,7 @@ def _collection(
 
 
 async def _list_managed_groups(teamviewer: Any) -> list[dict[str, Any]]:
-    payload = _decode_mcp_json(
-        await teamviewer.call_tool("tv_list_managed_groups"),
-        "tv_list_managed_groups",
-    )
+    payload = await _read_mcp_json(teamviewer, "tv_list_managed_groups")
     groups = _resources(payload, "tv_list_managed_groups")
     if payload.get("nextPaginationToken"):
         # The current official MCP handler advertises and sends limit/offset, while
@@ -66,10 +95,7 @@ async def _list_managed_groups(teamviewer: Any) -> list[dict[str, Any]]:
 
 
 async def _list_legacy_groups(teamviewer: Any) -> list[dict[str, Any]]:
-    payload = _decode_mcp_json(
-        await teamviewer.call_tool("tv_list_device_groups"),
-        "tv_list_device_groups",
-    )
+    payload = await _read_mcp_json(teamviewer, "tv_list_device_groups")
     return _collection(payload, "tv_list_device_groups", "groups", "resources")
 
 
@@ -80,9 +106,8 @@ async def _list_company_managed_devices(teamviewer: Any) -> list[dict[str, Any]]
 
     for _ in range(100):
         arguments = {"pagination_token": pagination_token} if pagination_token else {}
-        payload = _decode_mcp_json(
-            await teamviewer.call_tool("tv_list_company_managed_devices", **arguments),
-            "tv_list_company_managed_devices",
+        payload = await _read_mcp_json(
+            teamviewer, "tv_list_company_managed_devices", **arguments
         )
         devices.extend(_resources(payload, "tv_list_company_managed_devices"))
 
@@ -107,9 +132,8 @@ async def list_devices_across_namespaces(
         raise TeamViewerMCPReadError("Availability must be Online or Offline")
 
     legacy_arguments = {"online_state": online_state} if online_state else {}
-    legacy_payload = _decode_mcp_json(
-        await teamviewer.call_tool("tv_list_devices", **legacy_arguments),
-        "tv_list_devices",
+    legacy_payload = await _read_mcp_json(
+        teamviewer, "tv_list_devices", **legacy_arguments
     )
     legacy_devices = _collection(
         legacy_payload, "tv_list_devices", "devices", "resources"
@@ -137,16 +161,22 @@ async def _managed_group_result(teamviewer: Any, group: dict[str, Any]) -> dict[
         raise TeamViewerMCPReadError("TeamViewer MCP returned a managed group without an ID")
 
     selected_devices: list[dict[str, Any]] = []
+    failed_membership_checks: list[dict[str, Any]] = []
     for device in await _list_company_managed_devices(teamviewer):
         device_id = str(device.get("id", ""))
         if not device_id:
             continue
-        membership = _decode_mcp_json(
-            await teamviewer.call_tool(
-                "tv_get_managed_device_groups", device_id=device_id
-            ),
-            "tv_get_managed_device_groups",
-        )
+        try:
+            membership = await _read_mcp_json(
+                teamviewer,
+                "tv_get_managed_device_groups",
+                device_id=device_id,
+            )
+        except TeamViewerMCPReadError:
+            failed_membership_checks.append(
+                {"id": device.get("id"), "name": device.get("name")}
+            )
+            continue
         device_groups = _resources(membership, "tv_get_managed_device_groups")
         if not any(str(item.get("id", "")) == group_id for item in device_groups):
             continue
@@ -166,7 +196,7 @@ async def _managed_group_result(teamviewer: Any, group: dict[str, Any]) -> dict[
         )
 
     return {
-        "status": "ok",
+        "status": "partial" if failed_membership_checks else "ok",
         "route": "TeamViewer MCP only",
         "group": {"id": group_id, "name": group.get("name")},
         "deviceCount": len(selected_devices),
@@ -175,6 +205,7 @@ async def _managed_group_result(teamviewer: Any, group: dict[str, Any]) -> dict[
             "value may be shown as Sleeping or Offline in the TeamViewer UI."
         ),
         "devices": selected_devices,
+        "failedMembershipChecks": failed_membership_checks,
     }
 
 
@@ -270,9 +301,8 @@ async def list_devices_in_group(
     group_id = str(group.get("id", ""))
     if not group_id:
         raise TeamViewerMCPReadError("TeamViewer MCP returned a legacy group without an ID")
-    payload = _decode_mcp_json(
-        await teamviewer.call_tool("tv_list_devices", groupid=group_id),
-        "tv_list_devices",
+    payload = await _read_mcp_json(
+        teamviewer, "tv_list_devices", groupid=group_id
     )
     devices = _collection(payload, "tv_list_devices", "devices", "resources")
     return {
