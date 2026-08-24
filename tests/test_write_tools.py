@@ -96,6 +96,15 @@ class WriteToolTests(unittest.IsolatedAsyncioTestCase):
             await self.tools["tv_update_session"].func(session_code="s123")
         self.assertEqual(self.mcp.calls, [])
 
+    def test_session_write_schemas_require_canonical_s_prefix(self) -> None:
+        for name in ("tv_update_session", "tv_delete_session"):
+            with self.subTest(name=name):
+                schema = self.tools[name].parameters()
+                self.assertEqual(
+                    schema["properties"]["session_code"]["pattern"],
+                    "^s[0-9]+$",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

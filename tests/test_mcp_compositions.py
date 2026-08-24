@@ -263,6 +263,30 @@ class TeamViewerCrossNamespaceInventoryTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_cross_namespace_inventory_applies_explicit_name_prefix(self) -> None:
+        mcp = _FakeMCP(
+            [
+                {
+                    "resources": [
+                        {"device_id": "d1", "alias": "Primary", "online_state": "Online"},
+                        {"device_id": "d2", "alias": "Secondary", "online_state": "Online"},
+                    ]
+                },
+                {
+                    "resources": [
+                        {"id": "m1", "name": "paytons-003", "isOnline": True},
+                        {"id": "m2", "name": "robc-02", "isOnline": True},
+                    ]
+                },
+            ]
+        )
+
+        result = await list_devices_across_namespaces(mcp, "Online", "p")
+
+        self.assertEqual([item["alias"] for item in result["legacyDevices"]], ["Primary"])
+        self.assertEqual([item["name"] for item in result["managedDevices"]], ["paytons-003"])
+        self.assertEqual(result["namePrefix"], "p")
+
 
 if __name__ == "__main__":
     unittest.main()

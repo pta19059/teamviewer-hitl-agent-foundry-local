@@ -91,6 +91,25 @@ class ReadToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["resources"], [{"id": "one", "isOnline": True}])
         self.assertEqual(mcp.calls, [("tv_list_company_managed_devices", {})])
 
+    async def test_company_managed_name_prefix_filters_complete_mcp_result_locally(self) -> None:
+        mcp = _FakeMCP(
+            [
+                {
+                    "resources": [
+                        {"id": "one", "name": "paytons-003", "isOnline": True},
+                        {"id": "two", "name": "robc-02", "isOnline": True},
+                    ]
+                }
+            ]
+        )
+
+        result = await self._tool(mcp, "tv_list_company_managed_devices").func(
+            online_state="Online", name_prefix="p"
+        )
+
+        self.assertEqual([item["name"] for item in result["resources"]], ["paytons-003"])
+        self.assertEqual(mcp.calls, [("tv_list_company_managed_devices", {})])
+
     async def test_report_listing_uses_the_api_uuid_cursor_through_mcp(self) -> None:
         cursor = "550e8400-e29b-41d4-a716-446655440000"
         mcp = _FakeMCP(
@@ -152,14 +171,52 @@ class ReadToolTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(TeamViewerMCPReadError, "cannot forward"):
             await self._tool(mcp, "tv_list_managed_groups").func()
 
-    async def test_event_logs_fail_closed_instead_of_returning_a_partial_page(self) -> None:
-        mcp = _FakeMCP([{"Events": [], "PaginationToken": "next-page"}])
+    async def test_event_logs_split_ranges_and_remove_exact_boundary_overlap(self) -> None:
+        boundary_event = {"Timestamp": "2026-08-19T12:00:00Z", "EventName": "Edit"}
+        mcp = _FakeMCP(
+            [
+                {"AuditEvents": [{"partial": True}], "ContinuationToken": "next"},
+                {"AuditEvents": [{"EventName": "Left"}, boundary_event]},
+                {"AuditEvents": [boundary_event, {"EventName": "Right"}]},
+            ]
+        )
 
-        with self.assertRaisesRegex(TeamViewerMCPReadError, "wrong API field"):
-            await self._tool(mcp, "tv_get_event_logs").func(
-                start_date="2026-08-19T00:00:00Z",
-                end_date="2026-08-20T00:00:00Z",
-            )
+        result = await self._tool(mcp, "tv_get_event_logs").func(
+            start_date="2026-08-19T00:00:00Z",
+            end_date="2026-08-20T00:00:00Z",
+        )
+
+        self.assertEqual(
+            result["AuditEvents"],
+            [{"EventName": "Left"}, boundary_event, {"EventName": "Right"}],
+        )
+        self.assertEqual(result["MCPRangeCalls"], 3)
+        self.assertEqual(
+            mcp.calls,
+            [
+                (
+                    "tv_get_event_logs",
+                    {
+                        "start_date": "2026-08-19T00:00:00Z",
+                        "end_date": "2026-08-20T00:00:00Z",
+                    },
+                ),
+                (
+                    "tv_get_event_logs",
+                    {
+                        "start_date": "2026-08-19T00:00:00Z",
+                        "end_date": "2026-08-19T12:00:00Z",
+                    },
+                ),
+                (
+                    "tv_get_event_logs",
+                    {
+                        "start_date": "2026-08-19T12:00:00Z",
+                        "end_date": "2026-08-20T00:00:00Z",
+                    },
+                ),
+            ],
+        )
 
     async def test_sessions_fail_closed_when_more_results_exist(self) -> None:
         mcp = _FakeMCP(

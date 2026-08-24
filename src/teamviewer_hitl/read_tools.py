@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Literal
 from urllib.parse import parse_qs, urlparse
 from uuid import UUID
@@ -15,6 +16,8 @@ from pydantic import Field
 from .mcp_compositions import TeamViewerMCPReadError
 
 _MAX_PAGES = 100
+_MAX_EVENT_LOG_RANGE_CALLS = 127
+_MIN_EVENT_LOG_RANGE = timedelta(milliseconds=1)
 _UUID_IN_TEXT = re.compile(
     r"(?<![0-9a-fA-F])"
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
@@ -65,6 +68,115 @@ def _next_string(payload: Mapping[str, Any], *keys: str) -> str | None:
             raise TeamViewerMCPReadError(f"{key} was not a string")
         return value
     return None
+
+
+def _parse_event_datetime(value: str) -> datetime:
+    normalized = value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise TeamViewerMCPReadError("The event-log range is not valid ISO 8601") from exc
+    if parsed.tzinfo is None:
+        raise TeamViewerMCPReadError("The event-log range must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
+def _event_datetime_text(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _merge_event_ranges(left: list[Any], right: list[Any]) -> list[Any]:
+    """Remove exact boundary overlap while preserving multiplicity within each range."""
+    remaining_left: dict[str, int] = {}
+    for item in left:
+        identity = json.dumps(item, sort_keys=True, ensure_ascii=False, default=str)
+        remaining_left[identity] = remaining_left.get(identity, 0) + 1
+    merged = list(left)
+    for item in right:
+        identity = json.dumps(item, sort_keys=True, ensure_ascii=False, default=str)
+        overlap = remaining_left.get(identity, 0)
+        if overlap:
+            remaining_left[identity] = overlap - 1
+        else:
+            merged.append(item)
+    return merged
+
+
+async def _all_event_logs(
+    teamviewer: Any, start_date: str, end_date: str
+) -> dict[str, Any]:
+    """Complete event logs by splitting ranges when upstream MCP cannot page."""
+    start = _parse_event_datetime(start_date)
+    end = _parse_event_datetime(end_date)
+    if start >= end:
+        raise TeamViewerMCPReadError("The event-log start must precede the end")
+    calls = 0
+
+    async def fetch(range_start: datetime, range_end: datetime) -> list[Any]:
+        nonlocal calls
+        calls += 1
+        if calls > _MAX_EVENT_LOG_RANGE_CALLS:
+            raise TeamViewerMCPReadError(
+                "The event-log range required too many MCP subrange calls"
+            )
+        payload = _decode_mcp_json(
+            await teamviewer.call_tool(
+                "tv_get_event_logs",
+                start_date=_event_datetime_text(range_start),
+                end_date=_event_datetime_text(range_end),
+            ),
+            "tv_get_event_logs",
+        )
+        events = _list_value(payload, "tv_get_event_logs", "AuditEvents", "Events")
+        token = _next_string(
+            payload, "ContinuationToken", "continuationToken", "PaginationToken"
+        )
+        if token is None:
+            return events
+        if range_end - range_start <= _MIN_EVENT_LOG_RANGE:
+            raise TeamViewerMCPReadError(
+                "The official MCP event-log page is incomplete at the minimum time range"
+            )
+        midpoint = range_start + (range_end - range_start) / 2
+        left = await fetch(range_start, midpoint)
+        right = await fetch(midpoint, range_end)
+        return _merge_event_ranges(left, right)
+
+    events = await fetch(start, end)
+    return {
+        "AuditEvents": events,
+        "ContinuationToken": None,
+        "MCPRangeCalls": calls,
+    }
+
+
+def _filter_device_resources(
+    payload: dict[str, Any], tool_name: str, name_prefix: str | None
+) -> dict[str, Any]:
+    """Apply an explicit prefix to a complete MCP device result in the host."""
+    if name_prefix is None:
+        return payload
+    collection_key = next(
+        (
+            key
+            for key in ("resources", "devices")
+            if isinstance(payload.get(key), list)
+        ),
+        None,
+    )
+    if collection_key is None:
+        _list_value(payload, tool_name, "resources", "devices")
+        return payload
+    expected = name_prefix.casefold()
+    payload[collection_key] = [
+        item
+        for item in payload[collection_key]
+        if isinstance(item, Mapping)
+        and str(item.get("name") or item.get("alias") or "")
+        .casefold()
+        .startswith(expected)
+    ]
+    return payload
 
 
 def _report_cursor(value: str) -> str:
@@ -164,6 +276,14 @@ def create_mcp_read_tools(teamviewer: Any) -> list[Any]:
             Literal["Online", "Offline"] | None,
             Field(description="Optional exact availability filter"),
         ] = None,
+        name_prefix: Annotated[
+            str | None,
+            Field(
+                min_length=1,
+                max_length=128,
+                description="Optional device-name prefix applied by the host",
+            ),
+        ] = None,
     ) -> Any:
         """List legacy devices without exposing the upstream full_list argument."""
         arguments: dict[str, Any] = {}
@@ -171,13 +291,21 @@ def create_mcp_read_tools(teamviewer: Any) -> list[Any]:
             arguments["groupid"] = groupid
         if online_state is not None:
             arguments["online_state"] = online_state
-        return await teamviewer.call_tool("tv_list_devices", **arguments)
+        payload = _decode_mcp_json(
+            await teamviewer.call_tool("tv_list_devices", **arguments),
+            "tv_list_devices",
+        )
+        return _filter_device_resources(payload, "tv_list_devices", name_prefix)
 
     @tool(approval_mode="never_require")
     async def tv_list_managed_devices(
         online_state: Annotated[
             Literal["Online", "Offline"] | None,
             Field(description="Optional exact availability filter applied by the host"),
+        ] = None,
+        name_prefix: Annotated[
+            str | None,
+            Field(min_length=1, max_length=128, description="Device-name prefix applied by the host"),
         ] = None,
     ) -> dict[str, Any]:
         """List every directly managed device through bounded MCP pagination."""
@@ -189,13 +317,17 @@ def create_mcp_read_tools(teamviewer: Any) -> list[Any]:
                 for item in payload["resources"]
                 if isinstance(item, Mapping) and item.get("isOnline") is expected
             ]
-        return payload
+        return _filter_device_resources(payload, "tv_list_managed_devices", name_prefix)
 
     @tool(approval_mode="never_require")
     async def tv_list_company_managed_devices(
         online_state: Annotated[
             Literal["Online", "Offline"] | None,
             Field(description="Optional exact availability filter applied by the host"),
+        ] = None,
+        name_prefix: Annotated[
+            str | None,
+            Field(min_length=1, max_length=128, description="Device-name prefix applied by the host"),
         ] = None,
     ) -> dict[str, Any]:
         """List every company-managed device through bounded MCP pagination."""
@@ -209,7 +341,9 @@ def create_mcp_read_tools(teamviewer: Any) -> list[Any]:
                 for item in payload["resources"]
                 if isinstance(item, Mapping) and item.get("isOnline") is expected
             ]
-        return payload
+        return _filter_device_resources(
+            payload, "tv_list_company_managed_devices", name_prefix
+        )
 
     @tool(approval_mode="never_require")
     async def tv_list_managed_groups() -> dict[str, Any]:
@@ -319,21 +453,8 @@ def create_mcp_read_tools(teamviewer: Any) -> list[Any]:
         start_date: Annotated[str, Field(min_length=1, max_length=64)],
         end_date: Annotated[str, Field(min_length=1, max_length=64)],
     ) -> dict[str, Any]:
-        """Read event logs and fail closed if the upstream tool cannot fetch all pages."""
-        payload = _decode_mcp_json(
-            await teamviewer.call_tool(
-                "tv_get_event_logs", start_date=start_date, end_date=end_date
-            ),
-            "tv_get_event_logs",
-        )
-        if _next_string(
-            payload, "ContinuationToken", "continuationToken", "PaginationToken"
-        ) is not None:
-            raise TeamViewerMCPReadError(
-                "The official MCP event-log tool sends the next-page token under "
-                "the wrong API field"
-            )
-        return payload
+        """Read complete event logs through bounded official-MCP time subranges."""
+        return await _all_event_logs(teamviewer, start_date, end_date)
 
     @tool(approval_mode="never_require")
     async def tv_list_sessions(

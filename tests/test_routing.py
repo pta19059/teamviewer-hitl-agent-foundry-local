@@ -55,6 +55,30 @@ class RoutingTests(unittest.TestCase):
             with self.subTest(prompt=prompt):
                 self.assert_tool(prompt, expected, mutating=True)
 
+    def test_numeric_session_ids_are_canonicalized_for_the_mcp_api(self) -> None:
+        cases = {
+            "Get TeamViewer session code 156827066.": ("tv_get_session", False),
+            (
+                "Update TeamViewer session code 156827066 with description Customer confirmed."
+            ): ("tv_update_session", True),
+            "Close TeamViewer session code 156827066.": ("tv_delete_session", True),
+        }
+        for prompt, (tool_name, mutating) in cases.items():
+            with self.subTest(prompt=prompt):
+                route = route_prompt(prompt)
+                self.assertEqual(route.outcome, RouteOutcome.TOOL)
+                self.assertEqual(route.tool_name, tool_name)
+                self.assertEqual(dict(route.arguments)["session_code"], "s156827066")
+                self.assertEqual(route.mutating, mutating)
+
+    def test_invalid_session_code_format_is_rejected_before_mcp(self) -> None:
+        route = route_prompt(
+            "Update TeamViewer session code case-name with description Customer confirmed."
+        )
+
+        self.assertEqual(route.outcome, RouteOutcome.CLARIFY)
+        self.assertIsNone(route.tool_name)
+
     def test_create_session_requires_exactly_one_legacy_group_selector(self) -> None:
         for prompt in (
             "Create a TeamViewer support session named HITL-Test.",
@@ -145,8 +169,75 @@ class RoutingTests(unittest.TestCase):
         self.assert_host("Show the devices in SupportGroup.", "group_devices")
         self.assert_host("List the online TeamViewer devices.", "all_devices")
 
+    def test_documented_identifier_reads_bind_exact_arguments_without_model_help(self) -> None:
+        cases = {
+            "Get TeamViewer session code s123.": (
+                "tv_get_session",
+                {"session_code": "s123"},
+            ),
+            "Get device ID d1234567890.": (
+                "tv_get_device",
+                {"device_id": "d1234567890"},
+            ),
+            "Get device ID 550e8400-e29b-41d4-a716-446655440000.": (
+                "tv_get_managed_device",
+                {"device_id": "550e8400-e29b-41d4-a716-446655440000"},
+            ),
+            "Show hardware for monitored device with TeamViewer ID 987 654 321.": (
+                "tv_get_device_hardware_info",
+                {"teamviewer_id": 987654321},
+            ),
+            (
+                "Get connection report ID "
+                "550e8400-e29b-41d4-a716-446655440000."
+            ): (
+                "tv_get_connection_report",
+                {"connection_id": "550e8400-e29b-41d4-a716-446655440000"},
+            ),
+            (
+                "Show event logs from 2026-08-19T00:00:00Z "
+                "to 2026-08-20T00:00:00Z."
+            ): (
+                "tv_get_event_logs",
+                {
+                    "start_date": "2026-08-19T00:00:00Z",
+                    "end_date": "2026-08-20T00:00:00Z",
+                },
+            ),
+        }
+        for prompt, (tool_name, arguments) in cases.items():
+            with self.subTest(prompt=prompt):
+                route = route_prompt(prompt)
+                self.assertEqual(route.outcome, RouteOutcome.TOOL)
+                self.assertEqual(route.tool_name, tool_name)
+                self.assertEqual(dict(route.arguments), arguments)
+
     def test_explicit_allowed_tool_is_supported(self) -> None:
         self.assert_tool("Use only tv_get_account.", "tv_get_account")
+
+    def test_explicit_identifier_reads_bind_their_required_arguments(self) -> None:
+        cases = {
+            "Use only tv_get_session for session code s123.": (
+                "tv_get_session",
+                {"session_code": "s123"},
+            ),
+            "Use only tv_get_device for device ID d12345678.": (
+                "tv_get_device",
+                {"device_id": "d12345678"},
+            ),
+            (
+                "Use only tv_get_managed_device for device ID "
+                "550e8400-e29b-41d4-a716-446655440000."
+            ): (
+                "tv_get_managed_device",
+                {"device_id": "550e8400-e29b-41d4-a716-446655440000"},
+            ),
+        }
+        for prompt, (tool_name, arguments) in cases.items():
+            with self.subTest(prompt=prompt):
+                route = route_prompt(prompt)
+                self.assertEqual(route.tool_name, tool_name)
+                self.assertEqual(dict(route.arguments), arguments)
 
     def test_explicit_unknown_tool_fails_closed(self) -> None:
         route = route_prompt("Use only tv_delete_user.")
@@ -265,6 +356,19 @@ class RoutingTests(unittest.TestCase):
                 route = route_prompt(prompt)
                 self.assertEqual(route.tool_name, tool_name)
                 self.assertEqual(dict(route.arguments), arguments)
+
+        for spelling in ("starting", "sarting"):
+            with self.subTest(spelling=spelling):
+                prompt = (
+                    "List the online company-managed TeamViewer devices "
+                    f"{spelling} with p."
+                )
+                route = route_prompt(prompt)
+                self.assertEqual(route.tool_name, "tv_list_company_managed_devices")
+                self.assertEqual(
+                    dict(route.arguments),
+                    {"online_state": "Online", "name_prefix": "p"},
+                )
 
         for prompt in (
             "List sessions with tag closed.",

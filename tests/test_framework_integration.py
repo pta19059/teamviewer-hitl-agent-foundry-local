@@ -106,7 +106,8 @@ class AgentFrameworkApprovalIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_real_framework_executes_exactly_once_after_approval(self) -> None:
         result, mcp, client = await self._run_with_decision("APPROVE")
 
-        self.assertEqual(result, "completed")
+        self.assertIn("Qwen response (TeamViewer data retrieved exclusively", result)
+        self.assertTrue(result.endswith("completed"))
         self.assertEqual(
             mcp.calls,
             [

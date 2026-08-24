@@ -3,7 +3,7 @@ import unittest
 from pydantic import BaseModel
 
 from teamviewer_hitl.policy import APPROVAL_REQUIRED_TOOLS, READ_ONLY_TOOLS
-from teamviewer_hitl.routing import route_prompt
+from teamviewer_hitl.routing import RouteOutcome, route_prompt
 from teamviewer_hitl.validation import (
     _READ_CONTRACTS,
     _WRITE_CONTRACTS,
@@ -18,6 +18,58 @@ class _Arguments(BaseModel):
 
 
 class ValidationTests(unittest.TestCase):
+    def test_every_documented_operational_example_has_valid_host_bound_arguments(self) -> None:
+        prompts = (
+            "Show my TeamViewer account summary.",
+            "List the online legacy TeamViewer devices.",
+            "List the online company-managed TeamViewer devices.",
+            "List all legacy device groups.",
+            "List all managed device groups.",
+            "List all TeamViewer sessions.",
+            "List closed TeamViewer sessions.",
+            "Get TeamViewer session code s123.",
+            "Get device ID d1234567890.",
+            "Get device ID 550e8400-e29b-41d4-a716-446655440000.",
+            "Show hardware for monitored device with TeamViewer ID 987 654 321.",
+            "List all connection reports.",
+            (
+                "Get connection report ID "
+                "550e8400-e29b-41d4-a716-446655440000."
+            ),
+            (
+                "Show event logs from 2026-08-19T00:00:00Z "
+                "to 2026-08-20T00:00:00Z."
+            ),
+            (
+                "Create a TeamViewer support session with description HITL-Test "
+                "in group ID g12345678."
+            ),
+            "Update TeamViewer session code s123 with description Customer confirmed.",
+            "Close TeamViewer session code s123.",
+            (
+                "Set the description of managed device ID "
+                "550e8400-e29b-41d4-a716-446655440000 to Lobby kiosk."
+            ),
+            "Activate monitoring on TeamViewer ID 987654321.",
+            (
+                "Update connection report ID "
+                "550e8400-e29b-41d4-a716-446655440000 with notes Reviewed."
+            ),
+        )
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                route = route_prompt(prompt)
+                self.assertEqual(route.outcome, RouteOutcome.TOOL)
+                self.assertIsNotNone(route.tool_name)
+                self.assertIsNone(
+                    validate_invocation(
+                        route,
+                        prompt,
+                        route.tool_name or "",
+                        dict(route.arguments),
+                    )
+                )
+
     def test_every_exposed_tool_has_exactly_one_host_contract(self) -> None:
         self.assertEqual(set(_READ_CONTRACTS), set(READ_ONLY_TOOLS))
         self.assertEqual(set(_WRITE_CONTRACTS), set(APPROVAL_REQUIRED_TOOLS))
@@ -276,6 +328,24 @@ class ValidationTests(unittest.TestCase):
         )
         self.assertIn("explicit request field", error or "")
 
+    def test_numeric_session_id_proves_canonical_prefixed_code(self) -> None:
+        prompt = (
+            "Update TeamViewer session code 156827066 with description Customer confirmed."
+        )
+        route = route_prompt(prompt)
+
+        self.assertIsNone(
+            validate_invocation(
+                route,
+                prompt,
+                "tv_update_session",
+                {
+                    "session_code": "s156827066",
+                    "description": "Customer confirmed",
+                },
+            )
+        )
+
     def test_numeric_identifier_substrings_are_not_provenance(self) -> None:
         prompt = "Activate monitoring on TeamViewer ID 987654321."
         route = route_prompt(prompt)
@@ -314,27 +384,14 @@ class ValidationTests(unittest.TestCase):
     def test_managed_device_read_requires_canonical_uuid(self) -> None:
         prompt = "Get managed device ID not-a-uuid."
         route = route_prompt(prompt)
-        error = validate_invocation(
-            route,
-            prompt,
-            "tv_get_managed_device",
-            {"device_id": "not-a-uuid"},
-        )
-        self.assertIn("canonical", error or "")
+        self.assertEqual(route.outcome, RouteOutcome.CLARIFY)
+        self.assertIn("canonical", route.message or "")
 
     def test_relative_date_cannot_authorize_invented_absolute_dates(self) -> None:
         prompt = "Show TeamViewer event logs for yesterday."
         route = route_prompt(prompt)
-        error = validate_invocation(
-            route,
-            prompt,
-            "tv_get_event_logs",
-            {
-                "start_date": "2026-08-19T00:00:00Z",
-                "end_date": "2026-08-20T00:00:00Z",
-            },
-        )
-        self.assertIn("explicitly say", error or "")
+        self.assertEqual(route.outcome, RouteOutcome.CLARIFY)
+        self.assertIn("ISO 8601", route.message or "")
 
     def test_explicit_iso_date_range_is_allowed(self) -> None:
         prompt = (
@@ -402,7 +459,29 @@ class ValidationTests(unittest.TestCase):
             "tv_get_device_hardware_info",
             {"teamviewer_id": "987654321"},
         )
-        self.assertIn("numeric TeamViewer ID", error or "")
+        self.assertIn("does not match", error or "")
+
+    def test_device_name_prefix_is_bound_and_cannot_be_changed(self) -> None:
+        prompt = "List online company-managed TeamViewer devices starting with p."
+        route = route_prompt(prompt)
+        self.assertIsNone(
+            validate_invocation(
+                route,
+                prompt,
+                "tv_list_company_managed_devices",
+                {"online_state": "Online", "name_prefix": "p"},
+            )
+        )
+        self.assertIn(
+            "does not match",
+            validate_invocation(
+                route,
+                prompt,
+                "tv_list_company_managed_devices",
+                {"online_state": "Online", "name_prefix": "x"},
+            )
+            or "",
+        )
 
     def test_event_log_date_fields_cannot_be_swapped(self) -> None:
         prompt = (
@@ -418,7 +497,7 @@ class ValidationTests(unittest.TestCase):
                 "end_date": "2026-08-19T00:00:00Z",
             },
         )
-        self.assertIn("do not match", error or "")
+        self.assertIn("does not match", error or "")
 
 if __name__ == "__main__":
     unittest.main()

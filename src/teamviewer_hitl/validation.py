@@ -21,7 +21,7 @@ _READ_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "tv_list_device_groups": (frozenset(), frozenset()),
     "tv_get_device_group": (frozenset({"group_id"}), frozenset({"group_id"})),
     "tv_list_devices": (
-        frozenset({"groupid", "online_state"}),
+        frozenset({"groupid", "online_state", "name_prefix"}),
         frozenset(),
     ),
     "tv_get_device": (frozenset({"device_id"}), frozenset({"device_id"})),
@@ -34,9 +34,12 @@ _READ_CONTRACTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         ),
         frozenset({"start_date", "end_date"}),
     ),
-    "tv_list_managed_devices": (frozenset({"online_state"}), frozenset()),
+    "tv_list_managed_devices": (
+        frozenset({"online_state", "name_prefix"}),
+        frozenset(),
+    ),
     "tv_list_company_managed_devices": (
-        frozenset({"online_state"}),
+        frozenset({"online_state", "name_prefix"}),
         frozenset(),
     ),
     "tv_get_managed_device": (
@@ -131,7 +134,8 @@ _IDENTIFIER_VALUES: dict[str, re.Pattern[str]] = {
         re.IGNORECASE,
     ),
     "teamviewerid": re.compile(
-        r"\bteamviewer\s+id\s+(?P<value>[0-9]+)\b", re.IGNORECASE
+        r"\bteamviewer\s+id\s+(?P<value>[0-9](?:[0-9 ]*[0-9])?)\b",
+        re.IGNORECASE,
     ),
     "monitoringpolicyid": re.compile(
         rf"\bmonitoring\s+policy\s+id\s+(?P<value>{_UUID_TEXT})\b",
@@ -152,9 +156,9 @@ _IDENTIFIER_VALUES: dict[str, re.Pattern[str]] = {
 }
 
 _ROUTE_BOUND_READ_FIELDS: dict[str, frozenset[str]] = {
-    "tv_list_devices": frozenset({"groupid", "online_state"}),
-    "tv_list_managed_devices": frozenset({"online_state"}),
-    "tv_list_company_managed_devices": frozenset({"online_state"}),
+    "tv_list_devices": frozenset({"groupid", "online_state", "name_prefix"}),
+    "tv_list_managed_devices": frozenset({"online_state", "name_prefix"}),
+    "tv_list_company_managed_devices": frozenset({"online_state", "name_prefix"}),
     "tv_list_sessions": frozenset({"state"}),
 }
 _DATE_RANGE = re.compile(
@@ -191,7 +195,17 @@ def _has_labeled_identifier(prompt: str, key: str, value: Any) -> bool:
     matches = list(selector.finditer(prompt))
     if len(matches) != 1:
         return False
-    return str(matches[0].group("value")).casefold() == str(value).casefold()
+    prompt_value = str(matches[0].group("value"))
+    candidate_value = str(value)
+    if _normalized_key(key) == "teamviewerid":
+        prompt_value = prompt_value.replace(" ", "")
+        candidate_value = candidate_value.replace(" ", "")
+    if _normalized_key(key) == "sessioncode":
+        if prompt_value.isdigit():
+            prompt_value = f"s{prompt_value}"
+        elif re.fullmatch(r"[sS][0-9]+", prompt_value):
+            prompt_value = f"s{prompt_value[1:]}"
+    return prompt_value.casefold() == candidate_value.casefold()
 
 
 def _nonempty_string(arguments: Mapping[str, Any], key: str) -> bool:
@@ -254,6 +268,7 @@ def _comparable_value(key: str, value: Any) -> Any:
             "session_code",
             "state",
             "online_state",
+            "name_prefix",
         }:
             return normalized.casefold()
         return normalized
@@ -329,6 +344,15 @@ def _validate_read_arguments(
         return "online_state must be Online or Offline."
     if "state" in arguments and arguments["state"] not in {"open", "closed"}:
         return "Session state must be open or closed."
+    if "name_prefix" in arguments:
+        prefix = arguments["name_prefix"]
+        if (
+            not isinstance(prefix, str)
+            or not prefix.strip()
+            or len(prefix) > 128
+            or re.search(r"[\r\n]", prefix)
+        ):
+            return "name_prefix must be a non-empty single-line string of at most 128 characters."
     monitoring_detail_tools = {
         "tv_get_device_hardware_info",
         "tv_get_device_system_info",
@@ -367,10 +391,10 @@ def _validate_read_arguments(
         r"g[0-9]+", str(arguments["groupid"]), re.IGNORECASE
     ) is None:
         return "groupid must be a legacy group ID such as g12345678."
-    if "session_code" in arguments and not _safe_text_identifier(
-        arguments, "session_code"
-    ):
-        return "A valid session code is required."
+    if "session_code" in arguments and re.fullmatch(
+        r"s[0-9]+", str(arguments.get("session_code", ""))
+    ) is None:
+        return "A TeamViewer session code such as s123 is required."
 
     return None
 
@@ -386,13 +410,13 @@ def _validate_write_arguments(
         ) is None:
             return "groupid must be a TeamViewer legacy group ID such as g12345678."
     elif function_name == "tv_update_session":
-        if not _safe_text_identifier(arguments, "session_code"):
-            return "A valid session code is required."
+        if re.fullmatch(r"s[0-9]+", str(arguments.get("session_code", ""))) is None:
+            return "A TeamViewer session code such as s123 is required."
         if not _nonempty_string(arguments, "description"):
             return "A non-empty session description is required."
     elif function_name == "tv_delete_session":
-        if not _safe_text_identifier(arguments, "session_code"):
-            return "A valid session code is required."
+        if re.fullmatch(r"s[0-9]+", str(arguments.get("session_code", ""))) is None:
+            return "A TeamViewer session code such as s123 is required."
     elif function_name == "tv_update_managed_device_description":
         if not _canonical_uuid(arguments.get("device_id")):
             return "A canonical managed-device UUID is required."

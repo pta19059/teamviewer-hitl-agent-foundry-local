@@ -125,7 +125,9 @@ async def _list_company_managed_devices(teamviewer: Any) -> list[dict[str, Any]]
 
 
 async def list_devices_across_namespaces(
-    teamviewer: Any, online_state: str | None = None
+    teamviewer: Any,
+    online_state: str | None = None,
+    name_prefix: str | None = None,
 ) -> dict[str, Any]:
     """List legacy and company-managed devices through official MCP tools only."""
     if online_state not in {None, "Online", "Offline"}:
@@ -145,11 +147,28 @@ async def list_devices_across_namespaces(
         managed_devices = [
             device for device in managed_devices if device.get("isOnline") is expected
         ]
+    if name_prefix is not None:
+        expected_prefix = name_prefix.casefold()
+        legacy_devices = [
+            device
+            for device in legacy_devices
+            if str(device.get("alias") or device.get("name") or "")
+            .casefold()
+            .startswith(expected_prefix)
+        ]
+        managed_devices = [
+            device
+            for device in managed_devices
+            if str(device.get("name") or device.get("alias") or "")
+            .casefold()
+            .startswith(expected_prefix)
+        ]
 
     return {
         "status": "ok",
         "route": "TeamViewer MCP only",
         "onlineState": online_state,
+        "namePrefix": name_prefix,
         "legacyDevices": legacy_devices,
         "managedDevices": managed_devices,
     }

@@ -109,7 +109,31 @@ _SESSION_CODE_SELECTOR = re.compile(
     re.IGNORECASE,
 )
 _TEAMVIEWER_ID_SELECTOR = re.compile(
-    r"\bteamviewer\s+id\s+(?P<teamviewer_id>[0-9]+)\b", re.IGNORECASE
+    r"\bteamviewer\s+id\s+(?P<teamviewer_id>[0-9](?:[0-9 ]*[0-9])?)\b",
+    re.IGNORECASE,
+)
+
+
+def _canonical_session_code(value: str) -> str | None:
+    """Normalize TeamViewer's displayed numeric session ID to its API code."""
+    normalized = value.strip()
+    if normalized.isdigit():
+        return f"s{normalized}"
+    if re.fullmatch(r"[sS][0-9]+", normalized):
+        return f"s{normalized[1:]}"
+    return None
+_DEVICE_ID_SELECTOR = re.compile(
+    rf"\bdevice\s+id\s+(?P<device_id>{_UUID_TEXT}|d[0-9]+)\b", re.IGNORECASE
+)
+_GROUP_ID_SELECTOR = re.compile(
+    r"\bgroup\s+id\s+(?P<group_id>g[0-9]+)\b", re.IGNORECASE
+)
+_CONNECTION_ID_SELECTOR = re.compile(
+    rf"\bconnection(?:\s+report)?\s+id\s+(?P<connection_id>{_UUID_TEXT})\b",
+    re.IGNORECASE,
+)
+_DATE_RANGE_SELECTOR = re.compile(
+    r"\bfrom\s+(?P<start_date>\S+)\s+to\s+(?P<end_date>\S+)", re.IGNORECASE
 )
 _SESSION_UPDATE_PATTERNS = (
     re.compile(
@@ -256,10 +280,11 @@ def _write_arguments(tool_name: str, text: str) -> dict[str, Any] | None:
         if match is None or len(_SESSION_CODE_SELECTOR.findall(text)) != 1:
             return None
         description = _clean_mutable_value(match.group("description"))
-        if not description:
+        session_code = _canonical_session_code(match.group("session_code"))
+        if not description or session_code is None:
             return None
         return {
-            "session_code": match.group("session_code"),
+            "session_code": session_code,
             "description": description,
         }
 
@@ -267,7 +292,8 @@ def _write_arguments(tool_name: str, text: str) -> dict[str, Any] | None:
         matches = list(_SESSION_CODE_SELECTOR.finditer(text))
         if len(matches) != 1:
             return None
-        return {"session_code": matches[0].group("session_code")}
+        session_code = _canonical_session_code(matches[0].group("session_code"))
+        return {"session_code": session_code} if session_code is not None else None
 
     if tool_name == "tv_update_managed_device_description":
         match = _single_pattern_match(_MANAGED_DEVICE_UPDATE_PATTERNS, text)
@@ -285,7 +311,7 @@ def _write_arguments(tool_name: str, text: str) -> dict[str, Any] | None:
         matches = list(_TEAMVIEWER_ID_SELECTOR.finditer(text))
         if len(matches) != 1 or _POLICY_SELECTOR.search(text):
             return None
-        value = int(matches[0].group("teamviewer_id"))
+        value = int(matches[0].group("teamviewer_id").replace(" ", ""))
         if not 0 < value <= 9_007_199_254_740_991:
             return None
         return {"teamviewer_id": value}
@@ -452,6 +478,24 @@ def _host_route(intent: str, arguments: dict[str, Any]) -> IntentRoute:
     )
 
 
+def _single_read_selector(
+    pattern: re.Pattern[str], text: str, field: str
+) -> str | None:
+    matches = list(pattern.finditer(text))
+    return matches[0].group(field) if len(matches) == 1 else None
+
+
+def _teamviewer_id_argument(text: str) -> int | None:
+    value = _single_read_selector(_TEAMVIEWER_ID_SELECTOR, text, "teamviewer_id")
+    if value is None:
+        return None
+    normalized = value.replace(" ", "")
+    if not normalized.isdigit():
+        return None
+    parsed = int(normalized)
+    return parsed if 0 < parsed <= 9_007_199_254_740_991 else None
+
+
 def _availability_arguments(text: str) -> tuple[dict[str, Any] | None, str | None]:
     states = [
         value
@@ -463,13 +507,93 @@ def _availability_arguments(text: str) -> tuple[dict[str, Any] | None, str | Non
     return ({"online_state": states[0]} if states else None), None
 
 
+def _device_list_arguments(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    """Bind availability and an explicitly requested device-name prefix."""
+    arguments, error = _availability_arguments(text)
+    if error:
+        return None, error
+    matches = list(
+        re.finditer(
+            r"\b(?:starting|sarting)\s+with\s+"
+            r"(?P<prefix>[A-Za-z0-9][A-Za-z0-9 ._()'\-]{0,127}?)(?=\s*[.,;]?$)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+    if len(matches) > 1:
+        return None, "Supply at most one device-name prefix."
+    if matches:
+        prefix = " ".join(matches[0].group("prefix").strip().split())
+        if not prefix:
+            return None, "Supply a non-empty device-name prefix."
+        arguments = dict(arguments or {})
+        arguments["name_prefix"] = prefix
+    elif re.search(r"\b(?:starting|sarting)\s+with\b", text, re.IGNORECASE):
+        return None, "Supply a non-empty device-name prefix after 'starting with'."
+    return arguments, None
+
+
 def _explicit_read_arguments(
     tool_name: str, text: str
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Bind supported optional filters on an explicitly named read tool."""
     lowered = text.casefold()
+    if tool_name == "tv_get_session":
+        value = _single_read_selector(_SESSION_CODE_SELECTOR, text, "session_code")
+        session_code = _canonical_session_code(value) if value is not None else None
+        return (
+            ({"session_code": session_code}, None)
+            if session_code is not None
+            else (None, "Supply exactly one TeamViewer session code such as s123.")
+        )
+    if tool_name == "tv_get_device_group":
+        value = _single_read_selector(_GROUP_ID_SELECTOR, text, "group_id")
+        return (
+            ({"group_id": value}, None)
+            if value is not None
+            else (None, "Supply exactly one legacy group ID such as g12345678.")
+        )
+    if tool_name == "tv_get_device":
+        value = _single_read_selector(_DEVICE_ID_SELECTOR, text, "device_id")
+        if value is None or re.fullmatch(r"d[0-9]+", value, re.IGNORECASE) is None:
+            return None, "Supply exactly one legacy device ID such as d12345678."
+        return {"device_id": value}, None
+    if tool_name in {"tv_get_managed_device", "tv_get_managed_device_groups"}:
+        value = _single_read_selector(_DEVICE_ID_SELECTOR, text, "device_id")
+        if value is None or re.fullmatch(_UUID_TEXT, value) is None:
+            return None, "Supply exactly one canonical managed-device UUID."
+        return {"device_id": value.casefold()}, None
+    if tool_name in {
+        "tv_get_device_hardware_info",
+        "tv_get_device_system_info",
+        "tv_get_device_software_info",
+    }:
+        value = _teamviewer_id_argument(text)
+        return (
+            ({"teamviewer_id": value}, None)
+            if value is not None
+            else (None, "Supply exactly one positive numeric TeamViewer ID.")
+        )
+    if tool_name in {"tv_get_connection_report", "tv_get_connection_ai_summary"}:
+        value = _single_read_selector(
+            _CONNECTION_ID_SELECTOR, text, "connection_id"
+        )
+        return (
+            ({"connection_id": value.casefold()}, None)
+            if value is not None
+            else (None, "Supply exactly one canonical connection report ID.")
+        )
+    if tool_name == "tv_get_event_logs":
+        matches = list(_DATE_RANGE_SELECTOR.finditer(text))
+        if len(matches) != 1:
+            return None, "Supply exactly one ISO 8601 event-log range."
+        return {
+            "start_date": matches[0].group("start_date").rstrip(".,"),
+            "end_date": matches[0].group("end_date").rstrip(".,"),
+        }, None
+
     if tool_name == "tv_list_devices":
-        arguments, error = _availability_arguments(text)
+        arguments, error = _device_list_arguments(text)
         if error:
             return None, error
         if re.search(r"\b(?:shared|alias|remote\s+control)\b", lowered):
@@ -494,7 +618,7 @@ def _explicit_read_arguments(
             lowered,
         ):
             return None, "Managed-device lists expose only an online/offline filter."
-        return _availability_arguments(text)
+        return _device_list_arguments(text)
 
     if tool_name == "tv_list_sessions":
         if re.search(
@@ -654,9 +778,30 @@ def route_prompt(prompt: str) -> IntentRoute:
     ):
         return _tool_route("company_details", "tv_get_company")
     if "event log" in lowered or "audit log" in lowered:
-        return _tool_route("event_logs", "tv_get_event_logs")
+        match = _DATE_RANGE_SELECTOR.search(text)
+        if match is None or len(list(_DATE_RANGE_SELECTOR.finditer(text))) != 1:
+            return _clarify(
+                "Supply exactly one ISO 8601 event-log range: 'from <START> to <END>'."
+            )
+        return _tool_route(
+            "event_logs",
+            "tv_get_event_logs",
+            {
+                "start_date": match.group("start_date").rstrip(".,"),
+                "end_date": match.group("end_date").rstrip(".,"),
+            },
+        )
     if "connection" in lowered and "ai summary" in lowered:
-        return _tool_route("connection_ai_summary", "tv_get_connection_ai_summary")
+        connection_id = _single_read_selector(
+            _CONNECTION_ID_SELECTOR, text, "connection_id"
+        )
+        if connection_id is None:
+            return _clarify("Supply exactly one canonical connection report ID.")
+        return _tool_route(
+            "connection_ai_summary",
+            "tv_get_connection_ai_summary",
+            {"connection_id": connection_id.casefold()},
+        )
     if "device report" in lowered:
         arguments, error = _explicit_read_arguments("tv_list_device_reports", text)
         return _clarify(error) if error else _tool_route(
@@ -670,18 +815,48 @@ def route_prompt(prompt: str) -> IntentRoute:
             return _clarify(error) if error else _tool_route(
                 "connection_reports", "tv_list_connection_reports", arguments
             )
-        return _tool_route("connection_report", "tv_get_connection_report")
+        connection_id = _single_read_selector(
+            _CONNECTION_ID_SELECTOR, text, "connection_id"
+        )
+        if connection_id is None:
+            return _clarify("Supply exactly one canonical connection report ID.")
+        return _tool_route(
+            "connection_report",
+            "tv_get_connection_report",
+            {"connection_id": connection_id.casefold()},
+        )
     if "monitoring alarm" in lowered or "monitoring alert" in lowered:
         arguments, error = _explicit_read_arguments("tv_list_monitoring_alarms", text)
         return _clarify(error) if error else _tool_route(
             "monitoring_alarms", "tv_list_monitoring_alarms", arguments
         )
     if "hardware" in lowered and "device" in lowered:
-        return _tool_route("device_hardware", "tv_get_device_hardware_info")
+        teamviewer_id = _teamviewer_id_argument(text)
+        if teamviewer_id is None:
+            return _clarify("Supply exactly one positive numeric TeamViewer ID.")
+        return _tool_route(
+            "device_hardware",
+            "tv_get_device_hardware_info",
+            {"teamviewer_id": teamviewer_id},
+        )
     if "software" in lowered and "device" in lowered:
-        return _tool_route("device_software", "tv_get_device_software_info")
+        teamviewer_id = _teamviewer_id_argument(text)
+        if teamviewer_id is None:
+            return _clarify("Supply exactly one positive numeric TeamViewer ID.")
+        return _tool_route(
+            "device_software",
+            "tv_get_device_software_info",
+            {"teamviewer_id": teamviewer_id},
+        )
     if "system" in lowered and "device" in lowered:
-        return _tool_route("device_system", "tv_get_device_system_info")
+        teamviewer_id = _teamviewer_id_argument(text)
+        if teamviewer_id is None:
+            return _clarify("Supply exactly one positive numeric TeamViewer ID.")
+        return _tool_route(
+            "device_system",
+            "tv_get_device_system_info",
+            {"teamviewer_id": teamviewer_id},
+        )
     if "monitored device" in lowered or "monitored devices" in lowered:
         if re.search(r"\b(?:teamviewer|device|group|policy)\s+id\b", lowered):
             return _clarify(
@@ -699,7 +874,16 @@ def route_prompt(prompt: str) -> IntentRoute:
     if "session" in lowered:
         session_codes = list(_SESSION_CODE_SELECTOR.finditer(text))
         if len(session_codes) == 1 and not re.search(r"\bsessions\b", lowered):
-            return _tool_route("session", "tv_get_session")
+            session_code = _canonical_session_code(
+                session_codes[0].group("session_code")
+            )
+            if session_code is None:
+                return _clarify("Supply a TeamViewer session code such as s123.")
+            return _tool_route(
+                "session",
+                "tv_get_session",
+                {"session_code": session_code},
+            )
         if len(session_codes) > 1:
             return _clarify("Request exactly one TeamViewer session code.")
         arguments, error = _explicit_read_arguments("tv_list_sessions", text)
@@ -740,7 +924,14 @@ def route_prompt(prompt: str) -> IntentRoute:
                 "which groups",
             )
         ):
-            return _tool_route("managed_device_groups", "tv_get_managed_device_groups")
+            device_id = _single_read_selector(_DEVICE_ID_SELECTOR, text, "device_id")
+            if device_id is None or re.fullmatch(_UUID_TEXT, device_id) is None:
+                return _clarify("Supply exactly one canonical managed-device UUID.")
+            return _tool_route(
+                "managed_device_groups",
+                "tv_get_managed_device_groups",
+                {"device_id": device_id.casefold()},
+            )
     if "device group" in lowered and any(
         word in lowered for word in ("list", "groups", "all")
     ):
@@ -784,7 +975,12 @@ def route_prompt(prompt: str) -> IntentRoute:
     if "group" in lowered:
         if any(word in lowered for word in ("list", "groups", "all")):
             return _tool_route("legacy_groups", "tv_list_device_groups")
-        return _tool_route("legacy_group", "tv_get_device_group")
+        group_id = _single_read_selector(_GROUP_ID_SELECTOR, text, "group_id")
+        if group_id is None:
+            return _clarify("Supply exactly one legacy group ID such as g12345678.")
+        return _tool_route(
+            "legacy_group", "tv_get_device_group", {"group_id": group_id}
+        )
     if "managed device" in lowered:
         if any(word in lowered for word in ("list", "devices", "all", "online")):
             arguments, error = _explicit_read_arguments(
@@ -793,7 +989,14 @@ def route_prompt(prompt: str) -> IntentRoute:
             if error:
                 return _clarify(error)
             return _tool_route("managed_devices", "tv_list_managed_devices", arguments)
-        return _tool_route("managed_device", "tv_get_managed_device")
+        device_id = _single_read_selector(_DEVICE_ID_SELECTOR, text, "device_id")
+        if device_id is None or re.fullmatch(_UUID_TEXT, device_id) is None:
+            return _clarify("Supply exactly one canonical managed-device UUID.")
+        return _tool_route(
+            "managed_device",
+            "tv_get_managed_device",
+            {"device_id": device_id.casefold()},
+        )
     if "device" in lowered:
         if any(word in lowered for word in ("list", "devices", "all", "online", "offline")):
             arguments, error = _explicit_read_arguments("tv_list_devices", text)
@@ -802,7 +1005,20 @@ def route_prompt(prompt: str) -> IntentRoute:
             if "legacy" in lowered or "computers & contacts" in lowered:
                 return _tool_route("legacy_devices", "tv_list_devices", arguments)
             return _host_route("all_devices", arguments or {})
-        return _tool_route("legacy_device", "tv_get_device")
+        device_id = _single_read_selector(_DEVICE_ID_SELECTOR, text, "device_id")
+        if device_id is None:
+            return _clarify(
+                "Supply exactly one device ID. Legacy IDs start with d; managed IDs are UUIDs."
+            )
+        if re.fullmatch(_UUID_TEXT, device_id):
+            return _tool_route(
+                "managed_device",
+                "tv_get_managed_device",
+                {"device_id": device_id.casefold()},
+            )
+        return _tool_route(
+            "legacy_device", "tv_get_device", {"device_id": device_id}
+        )
 
     if "teamviewer" in lowered and _OPERATIONAL_VERB.search(text):
         return _clarify(

@@ -43,8 +43,8 @@ def create_mcp_write_tools(teamviewer: Any) -> list[Any]:
             Field(
                 min_length=1,
                 max_length=255,
-                pattern=r"^[A-Za-z0-9_-]+$",
-                description="Existing session code",
+                pattern=r"^s[0-9]+$",
+                description="Canonical Instant Support session code such as s123",
             ),
         ],
         description: Annotated[
@@ -65,8 +65,8 @@ def create_mcp_write_tools(teamviewer: Any) -> list[Any]:
             Field(
                 min_length=1,
                 max_length=255,
-                pattern=r"^[A-Za-z0-9_-]+$",
-                description="Session code to close",
+                pattern=r"^s[0-9]+$",
+                description="Canonical Instant Support session code such as s123",
             ),
         ],
     ) -> Any:

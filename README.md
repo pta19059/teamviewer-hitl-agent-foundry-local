@@ -10,11 +10,15 @@ the primary setup documented below.
 
 ## What this project does
 
-- Reads TeamViewer account, device, group, monitoring, session, report, and event-log data.
-- Uses the local tool-capable `qwen2.5-7b` model through Foundry Local for response generation
-  and exact argument preparation.
+- Reads TeamViewer account, device, group, monitoring, session, and report data. Event-log reads
+  fail closed when the pinned official MCP server returns an unusable pagination token.
+- Uses the local tool-capable `qwen2.5-7b` model through Foundry Local for conversation and every
+  supported TeamViewer request. Read arguments remain deterministic and large MCP responses are
+  bounded by the host before the verified result returns to Qwen.
 - Connects to TeamViewer's official MCP server over local stdio.
-- Routes each prompt deterministically before the model runs and exposes at most one operation.
+- Uses Qwen to analyze and confirm the exact host-validated operation before any TeamViewer MCP
+  call can run. The operation is enforced in the planner function's JSON Schema enum; neighboring
+  tools from another identifier namespace cannot be selected.
 - Uses typed MCP-only read adapters for API-compatible identifiers, filters, and pagination.
 - Adds one read-only legacy/managed group resolver built exclusively from official TeamViewer MCP
   tools.
@@ -24,12 +28,16 @@ the primary setup documented below.
 - Records approvals and rejections in `.audit/teamviewer-approvals.jsonl`.
 - Hides high-risk TeamViewer administration tools from the model entirely.
 
-The upstream MCP connection allows 30 TeamViewer operations: 24 reads and 6 writes. Every
-model-visible tool name is published by the pinned official TeamViewer MCP server. The model never
-sees all tools together: it receives no tool for conversation, or exactly one route-selected tool
-for an operational request. The six application-level write adapters have strict schemas and call
-only their identically named official MCP operations. Policy assignment is temporarily disabled
-because the current upstream `assignments` schema is not sufficiently typed.
+The upstream MCP connection allows 30 TeamViewer operations: 24 reads and 6 writes. Qwen analyzes
+and confirms the operation using an internal non-executing planning function whose schema contains
+only the exact operation proven by host parsing. The host rejects any disagreement with explicit
+identifiers, filters, or operation semantics. After planning, every model-visible TeamViewer tool name is published by the pinned
+official TeamViewer MCP server. The model never sees the complete MCP tool set: it receives one
+zero-argument host-bound wrapper for an ordinary read or exactly one route-selected write tool for
+a state-changing request. The six application-level write adapters have strict schemas and call only their
+identically named official MCP operations. Policy
+assignment is temporarily disabled because the current upstream `assignments` schema is not
+sufficiently typed.
 
 ## Architecture and approval boundary
 
@@ -37,13 +45,19 @@ because the current upstream `assignments` schema is not sufficiently typed.
 Operator prompt
     |
     v
-Deterministic host router
-    |-- conversation -------------> model with zero tools
-    |-- unclear/unsupported ------> deterministic clarification; zero TeamViewer operations
-    |-- one read -----------------> expose exactly one read tool
-    |                                -> strict argument/provenance guard
-    |                                -> official TeamViewer MCP server
-    `-- one write ----------------> expose exactly one typed write wrapper
+Qwen operation planner (non-executing exact operation confirmation)
+    |
+    v
+Deterministic host validation
+    |-- disagreement -------------> fail closed; zero TeamViewer operations
+    |-- conversation -------------> Qwen with zero TeamViewer tools
+    |-- unclear/unsupported ------> clarification; zero TeamViewer operations
+    |-- one read -----------------> bind exact arguments in the host
+    |                                -> Qwen calls one zero-argument bound wrapper
+    |                                -> wrapper invokes exactly one official MCP read
+    |                                -> host bounds the verified MCP result
+    |                                -> Qwen renders the operator response
+    `-- one write ----------------> expose exactly one typed write wrapper to Qwen
                                      -> validate exact proposed call
                                      -> display tool + arguments
                                          |-- APPROVE -> validate again -> MCP
@@ -51,11 +65,17 @@ Deterministic host router
 
 Named-group read ----------------> host resolves legacy + managed namespaces through MCP
                                     -> reject no-match or ambiguity
-                                    -> deterministic formatting of verified membership
+                                    -> bound and format verified membership
+                                    -> Qwen renders the operator response
 ```
 
 This approval gate supplements TeamViewer token scopes; it does not replace them. Keep the
 TeamViewer token narrowly scoped and review the allow-list with `--show-policy`.
+
+The CLI makes the runtime boundary visible. Model-produced read responses start with
+`Qwen response (TeamViewer data retrieved exclusively through the official MCP server)`. Ordinary
+conversation states that no TeamViewer operation ran. Before a write approval, the CLI states that
+Qwen prepared the host-bound request and that execution uses the official MCP server exclusively.
 
 ### MCP-only TeamViewer boundary
 
@@ -75,6 +95,21 @@ An unqualified request such as `List the online TeamViewer devices` uses a deter
 workflow over both `tv_list_devices` and `tv_list_company_managed_devices`. Results are presented
 in separate legacy and company-managed sections. Say `legacy devices` or `company-managed devices`
 when only one official inventory namespace is wanted.
+
+All other routed reads also prevent model argument generation: Qwen sees one zero-argument wrapper
+whose official MCP operation and arguments were already bound by the host. This prevents Qwen from
+adding unsupported filters such as `name`, `shared`, or `shouldMatchFullName`, while still keeping
+Qwen in the request and response path. Results are bounded before Qwen receives them. List output
+displays at most 4 items per non-device collection and the serialized evidence is capped at 2,500
+characters for the memory-constrained local CPU model. Device inventories use a compact name,
+TeamViewer ID, and device-ID projection with an 8,000-character Qwen evidence budget. Qwen analyzes
+the complete compact inventory and produces only a short count/filter summary; the host appends
+every verified MCP device row verbatim. This avoids slow model regeneration and allows the current
+inventory to be shown completely. The response reports if a larger future inventory exceeds the
+Qwen analysis budget. Use a specific-ID read to inspect omitted details.
+
+Connection-report listings use a smaller five-item sample so Qwen can include the report ID, user
+name, and device name for every displayed entry without exhausting its response budget.
 
 ## Prerequisites
 
@@ -251,6 +286,19 @@ foundry service status
 The first model download is several gigabytes and can take several minutes. The model alias lets
 Foundry Local select a compatible CPU, GPU, or NPU variant for the machine.
 
+Keep `FOUNDRY_LOCAL_MODEL=qwen2.5-7b` as an alias rather than pinning a full `-cpu`, `-gpu`, or
+`-npu` variant. This lets Foundry Local select the fastest compatible execution provider. Check the
+`id` returned by `/v1/models`: an ID ending in `generic-cpu` confirms CPU inference. Use
+`foundry model list --variants` to inspect accelerated variants after Foundry has registered the
+machine's execution providers.
+
+The application tunes Qwen for this workload: deterministic write-tool preparation uses
+`temperature=0` with a 128-token ceiling, rejected-call settlement uses one token, approved-call
+continuation uses 160 tokens, and ordinary conversation uses `temperature=0.2` with a 384-token
+ceiling. Read-only TeamViewer requests bypass LLM inference entirely while still using the
+official MCP server. For several conversational or write requests, use the interactive
+`teamviewer-hitl` session instead of starting multiple one-shot processes concurrently.
+
 The status command prints an OpenAI-compatible loopback URL such as:
 
 ```text
@@ -318,13 +366,14 @@ Request only the company-managed namespace:
 
 ```powershell
 teamviewer-hitl "List the online company-managed TeamViewer devices."
+teamviewer-hitl "List the online company-managed TeamViewer devices starting with p."
 ```
 
-Test a group by exact name. The resolver checks both legacy Computers & Contacts groups and managed
-groups through MCP, and stops if the name is ambiguous:
+Test a group by exact name, replacing `<EXACT_GROUP_NAME>`. The resolver checks both legacy
+Computers & Contacts groups and managed groups through MCP, and stops if the name is ambiguous:
 
 ```powershell
-teamviewer-hitl "Show the devices in SupportGroup."
+teamviewer-hitl "Show the devices in <EXACT_GROUP_NAME>."
 ```
 
 Run an interactive session:
@@ -367,10 +416,20 @@ Type APPROVE to execute this exact call. Any other response rejects it.
 For a rejection-path test, type anything other than `APPROVE`. For an execution test, verify the
 target and arguments carefully and then type exactly `APPROVE`.
 
-The host pins every supported model-driven operational prompt to one exact official tool, for both
-Foundry Local and the cloud provider. Named-group lookup is a deterministic host workflow over
-official MCP tools and exposes no model tool. The model cannot substitute a group lookup,
-monitoring call, or any other operation.
+Qwen analyzes and confirms the exact operation proven by deterministic host parsing. `clarify` is
+offered only when host parsing finds an incomplete or ambiguous request, so a fully validated
+operation cannot be downgraded or switched to a neighboring namespace by the model. Ordinary reads
+then use one zero-argument wrapper
+over the exact official MCP operation. Device inventories use the validated Qwen plan, call the
+official MCP operation with host-bound arguments, let Qwen analyze the compact complete result,
+and append all verified rows. For writes, the host pins the model to one exact official tool.
+Named-group lookup remains a deterministic MCP-only composition after Qwen selects that workflow.
+Hardware inventory groups only byte-for-byte duplicate MCP records and reports their quantity;
+same-name components with different details remain separate. Qwen analyzes the totals and the host
+appends the complete authoritative component list.
+TeamViewer may display an Instant Support session ID without its API prefix. For get, update, and
+close prompts, an explicitly labeled numeric session code is canonicalized to `s<digits>` and the
+prefixed value is shown in the approval screen before any write can execute.
 For a write, the host also binds the approved tool name and canonical arguments to the continuation;
 any post-approval change is blocked before MCP execution.
 
@@ -424,7 +483,7 @@ teamviewer-hitl "List the online legacy TeamViewer devices."
 teamviewer-hitl "List the online company-managed TeamViewer devices."
 
 # Exact-name group lookup across legacy and managed group namespaces
-teamviewer-hitl "Show the devices in SupportGroup."
+teamviewer-hitl "Show the devices in <EXACT_GROUP_NAME>."
 
 # Group inventories
 teamviewer-hitl "List all legacy device groups."
@@ -434,26 +493,25 @@ teamviewer-hitl "List all managed device groups."
 teamviewer-hitl "List all TeamViewer sessions."
 teamviewer-hitl "List closed TeamViewer sessions."
 teamviewer-hitl "Get TeamViewer session code s123."
+# Legacy device IDs start with d
 teamviewer-hitl "Get device ID d1234567890."
-teamviewer-hitl "Show hardware for monitored device with TeamViewer ID 987654321."
+# Managed device IDs are UUIDs
+teamviewer-hitl "Get device ID 550e8400-e29b-41d4-a716-446655440000."
+# TeamViewer display spacing is accepted and normalized
+teamviewer-hitl "Show hardware for monitored device with TeamViewer ID 987 654 321."
 teamviewer-hitl "List all connection reports."
 teamviewer-hitl "Get connection report ID 550e8400-e29b-41d4-a716-446655440000."
-teamviewer-hitl "Show event logs from 2026-08-19T00:00:00Z to 2026-08-20T00:00:00Z."
 
 # Writes: each stops for exact APPROVE input
 teamviewer-hitl "Create a TeamViewer support session with description HITL-Test in group ID <GROUP_ID>."
 teamviewer-hitl "Update TeamViewer session code s123 with description Customer confirmed."
-teamviewer-hitl "Close TeamViewer session code s123."
-teamviewer-hitl "Set the description of managed device ID 550e8400-e29b-41d4-a716-446655440000 to Lobby kiosk."
-teamviewer-hitl "Activate monitoring on TeamViewer ID 987654321."
-teamviewer-hitl "Update connection report ID 550e8400-e29b-41d4-a716-446655440000 with notes Reviewed."
 ```
 
 For a targeted read or write, label the identifier explicitly as `session code`, `device ID`,
 `connection report ID`, `group ID`, or `TeamViewer ID`. The value must match exactly; a device or
 session name is never silently treated as an ID. If you know only a name, run a read/list command
 first, then submit a second command containing the returned identifier. Relative dates such as
-`yesterday` are not converted by the model; supply an explicit ISO 8601 range.
+`yesterday` are not inferred; supported date-based routes require an explicit ISO 8601 range.
 
 Session creation requires exactly one explicit legacy Computers & Contacts selector: `in group ID
 <GROUP_ID>`. Use the ID returned by `List all device groups.`; a managed-device group is a separate
@@ -580,15 +638,27 @@ exclusively on the official MCP transport.
 
 ### The local model describes a tool but does not call it
 
-The host requires the exact routed function name and verifies that its invocation middleware ran.
-If the provider returns prose without executing the required MCP read, the host discards that prose
-and reports that no live data is available. Keep prompts explicit and request one operation at a
-time. Run the test suite if this behavior regresses.
+Read operations pass through Qwen planning, but Qwen cannot unilaterally authorize parameters: the
+host verifies the selected operation and every explicit filter or identifier. Ordinary reads then
+expose one zero-argument wrapper bound to the validated official MCP operation. Device inventories
+are compacted for Qwen analysis and rendered completely from verified MCP evidence. For writes,
+the host requires the exact routed function name and verifies that its invocation middleware ran.
+Keep prompts explicit and request one operation at a time.
 
 Qwen may duplicate a valid structured function call inside a textual
 `<tool_call>...</tool_call>` envelope. Phi variants may use
 `<|tool_call|>...<|/tool_call|>`. The host removes both provider-specific envelopes from operator
 output; neither textual form counts as execution. Only invocation middleware confirms execution.
+
+### Event-log pagination
+
+The pinned official `tv_get_event_logs` MCP handler advertises `continuation_token` but cannot
+forward the current event-log pagination token correctly. When TeamViewer reports another page,
+the application recursively divides the requested UTC range and calls the same official MCP tool
+for each subrange. Incomplete parent pages are discarded, exact cross-boundary overlaps are removed,
+and results are returned only after every subrange is complete. The composition is limited to 127
+MCP calls and a one-millisecond minimum range; exceeding either guard fails closed without returning
+partial logs. The Python host never calls the TeamViewer Web API directly.
 
 ### A named group returns unrelated devices
 
