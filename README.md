@@ -457,11 +457,47 @@ teamviewer-hitl "Show my TeamViewer account summary."
 # Interactive mode
 teamviewer-hitl
 
+# Local web console with command runner and workflow visualization
+teamviewer-hitl-web --open
+
 # Run the module without the generated console executable
 python -m teamviewer_hitl.cli
 
 # Run tests
 python -m unittest discover -s tests -v
+```
+
+## Local web console
+
+The project includes a local-only browser console that lets an operator enter or select a command,
+preview its exact route and arguments, run it through Qwen and the official TeamViewer MCP server,
+and follow each workflow stage visually.
+
+Start it after activating the virtual environment:
+
+```powershell
+teamviewer-hitl-web --open
+```
+
+If the generated command is not yet available after pulling an update, refresh the editable install
+once and start it again:
+
+```powershell
+python -m pip install -e .
+teamviewer-hitl-web --open
+```
+
+The console listens on `http://127.0.0.1:8765/` by default. It accepts only loopback browser
+requests. Read-only commands run immediately. A state-changing command first displays the exact
+canonical operation and arguments in a single-use approval dialog. Approving launches the normal
+CLI workflow and supplies exact `APPROVE`; rejecting launches the same workflow with `REJECT`, so
+the existing validation, audit, Qwen planning, and MCP-only execution boundaries remain active.
+Only one CLI operation runs at a time to avoid concurrent access to the local model.
+
+Use another local port when needed:
+
+```powershell
+teamviewer-hitl-web --port 8877 --open
 ```
 
 ## Supported prompt examples

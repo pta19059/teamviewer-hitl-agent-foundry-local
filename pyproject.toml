@@ -19,6 +19,7 @@ dependencies = [
 
 [project.scripts]
 teamviewer-hitl = "teamviewer_hitl.cli:main"
+teamviewer-hitl-web = "teamviewer_hitl.web:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/teamviewer_hitl"]

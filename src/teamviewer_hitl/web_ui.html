@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TeamViewer HITL Agent Console</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f7fb;
+      --surface: #ffffff;
+      --surface-soft: #eef3ff;
+      --text: #15213a;
+      --muted: #65718a;
+      --border: #d8dfeb;
+      --primary: #3159d8;
+      --primary-strong: #2447ba;
+      --primary-text: #ffffff;
+      --success: #177a50;
+      --success-soft: #e5f6ee;
+      --warning: #9a6410;
+      --warning-soft: #fff4d6;
+      --danger: #b13939;
+      --danger-soft: #fdeaea;
+      --terminal: #101624;
+      --terminal-text: #dce6ff;
+      --shadow: 0 18px 45px rgba(25, 44, 86, 0.10);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d1220;
+        --surface: #151c2c;
+        --surface-soft: #1c2946;
+        --text: #edf2ff;
+        --muted: #9ba8c2;
+        --border: #2b3750;
+        --primary: #7b9cff;
+        --primary-strong: #9ab2ff;
+        --primary-text: #0a1020;
+        --success: #5ed39a;
+        --success-soft: #17382d;
+        --warning: #f2bd62;
+        --warning-soft: #3b2e16;
+        --danger: #ff8f8f;
+        --danger-soft: #442323;
+        --terminal: #090d16;
+        --terminal-text: #dce6ff;
+        --shadow: 0 18px 45px rgba(0, 0, 0, 0.28);
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    button, textarea, select { font: inherit; }
+    button:focus-visible, textarea:focus-visible, select:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--primary) 35%, transparent);
+      outline-offset: 2px;
+    }
+    .shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 34px 0 52px; }
+    .masthead { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
+    .eyebrow { color: var(--primary); font-size: 13px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; }
+    h1 { margin: 8px 0 8px; font-size: clamp(28px, 4vw, 44px); line-height: 1.08; letter-spacing: -.035em; }
+    .subtitle { margin: 0; max-width: 720px; color: var(--muted); line-height: 1.6; }
+    .boundary { display: inline-flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: 999px; padding: 8px 12px; background: var(--surface); color: var(--muted); white-space: nowrap; font-size: 13px; }
+    .boundary-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--success) 16%, transparent); }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.18fr) minmax(330px, .82fr); gap: 20px; align-items: start; }
+    .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 20px 22px 0; }
+    .panel-head h2 { margin: 0; font-size: 17px; }
+    .panel-head span { color: var(--muted); font-size: 12px; }
+    .composer { padding: 18px 22px 22px; }
+    label { display: block; margin-bottom: 8px; color: var(--muted); font-size: 13px; font-weight: 650; }
+    select, textarea {
+      width: 100%; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); color: var(--text); padding: 12px 14px;
+    }
+    select { margin-bottom: 12px; }
+    textarea { min-height: 118px; resize: vertical; line-height: 1.5; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+    button { border: 1px solid var(--border); border-radius: 10px; padding: 10px 15px; background: var(--surface); color: var(--text); cursor: pointer; font-weight: 650; }
+    button:hover { background: var(--surface-soft); }
+    button.primary { border-color: var(--primary); background: var(--primary); color: var(--primary-text); }
+    button.primary:hover { background: var(--primary-strong); }
+    button.danger { border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); color: var(--danger); }
+    button:disabled { cursor: not-allowed; opacity: .55; }
+    .status { min-height: 24px; margin-top: 14px; display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 13px; }
+    .spinner { width: 14px; height: 14px; border: 2px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+    .workflow { padding: 16px 22px 24px; }
+    .route-meta { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 18px; }
+    .meta { border-left: 3px solid var(--primary); padding: 5px 0 5px 11px; min-width: 0; }
+    .meta span { display: block; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .07em; }
+    .meta strong { display: block; margin-top: 3px; overflow-wrap: anywhere; font-size: 13px; }
+    .flow { position: relative; display: grid; gap: 0; }
+    .step { position: relative; display: grid; grid-template-columns: 34px minmax(0, 1fr); gap: 12px; padding: 0 0 19px; }
+    .step:last-child { padding-bottom: 0; }
+    .step:not(:last-child)::after { content: ""; position: absolute; left: 16px; top: 32px; bottom: 0; width: 2px; background: var(--border); }
+    .step-marker { position: relative; z-index: 1; width: 34px; height: 34px; display: grid; place-items: center; border: 2px solid var(--border); border-radius: 50%; background: var(--surface); color: var(--muted); font-size: 12px; font-weight: 800; }
+    .step.active .step-marker { border-color: var(--primary); background: var(--surface-soft); color: var(--primary); }
+    .step.done .step-marker { border-color: var(--success); background: var(--success-soft); color: var(--success); }
+    .step.failed .step-marker { border-color: var(--danger); background: var(--danger-soft); color: var(--danger); }
+    .step-copy { padding-top: 2px; }
+    .step-copy strong { display: block; font-size: 14px; }
+    .step-copy span { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+    .terminal-panel { grid-column: 1 / -1; overflow: hidden; }
+    .terminal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px 18px; background: color-mix(in srgb, var(--terminal) 94%, var(--surface)); color: var(--terminal-text); border-bottom: 1px solid color-mix(in srgb, var(--terminal-text) 14%, transparent); }
+    .terminal-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; }
+    .lights { display: flex; gap: 6px; }
+    .light { width: 9px; height: 9px; border-radius: 50%; background: color-mix(in srgb, var(--terminal-text) 26%, transparent); }
+    .terminal { margin: 0; min-height: 190px; max-height: 520px; overflow: auto; padding: 20px; background: var(--terminal); color: var(--terminal-text); white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; font: 13px/1.55 "Cascadia Code", "SFMono-Regular", Consolas, monospace; }
+    dialog { width: min(620px, calc(100% - 28px)); border: 1px solid var(--border); border-radius: 18px; padding: 0; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+    dialog::backdrop { background: rgba(5, 10, 24, .62); }
+    .dialog-body { padding: 24px; }
+    .dialog-body h2 { margin: 0 0 8px; }
+    .dialog-body p { margin: 0 0 16px; color: var(--muted); line-height: 1.5; }
+    .approval-code { margin: 0; padding: 15px; border-radius: 12px; background: var(--terminal); color: var(--terminal-text); white-space: pre-wrap; overflow-wrap: anywhere; font: 13px/1.5 "Cascadia Code", Consolas, monospace; }
+    .dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+    .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+    @media (max-width: 820px) {
+      .masthead { flex-direction: column; }
+      .layout { grid-template-columns: 1fr; }
+      .terminal-panel { grid-column: auto; }
+    }
+    @media (max-width: 520px) {
+      .shell { width: min(100% - 20px, 1180px); padding-top: 22px; }
+      .panel-head, .composer, .workflow { padding-left: 16px; padding-right: 16px; }
+      .route-meta { grid-template-columns: 1fr; }
+      .actions button { flex: 1 1 130px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <header class="masthead">
+      <div>
+        <div class="eyebrow">Microsoft Agent Framework · Foundry Local</div>
+        <h1>TeamViewer HITL Agent Console</h1>
+        <p class="subtitle">Run a natural-language command, inspect the exact route, and follow the request from Qwen analysis through host validation to the official TeamViewer MCP boundary.</p>
+      </div>
+      <div class="boundary"><span class="boundary-dot" aria-hidden="true"></span>Official MCP only</div>
+    </header>
+
+    <section class="layout">
+      <div class="panel">
+        <div class="panel-head"><h2>Command</h2><span>One operation per prompt</span></div>
+        <div class="composer">
+          <label for="examples">Example</label>
+          <select id="examples">
+            <option value="">Choose an example…</option>
+            <option>Show my TeamViewer account summary.</option>
+            <option>List the online TeamViewer devices.</option>
+            <option>List the online company-managed TeamViewer devices.</option>
+            <option>List all legacy device groups.</option>
+            <option>List all managed device groups.</option>
+            <option>List all TeamViewer sessions.</option>
+            <option>List closed TeamViewer sessions.</option>
+            <option>Get TeamViewer session code s123.</option>
+            <option>Get device ID d1234567890.</option>
+            <option>Show hardware for monitored device with TeamViewer ID 987654321.</option>
+            <option>List all connection reports.</option>
+            <option>Show event logs from 2026-08-19T00:00:00Z to 2026-08-20T00:00:00Z.</option>
+            <option>Create a TeamViewer support session with description HITL-Test in group ID &lt;GROUP_ID&gt;.</option>
+            <option>Update TeamViewer session code s123 with description Customer confirmed.</option>
+          </select>
+          <label for="prompt">Natural-language request</label>
+          <textarea id="prompt" spellcheck="false">List the online TeamViewer devices.</textarea>
+          <div class="actions">
+            <button type="button" id="analyze">Analyze workflow</button>
+            <button type="button" class="primary" id="run">Run command</button>
+            <button type="button" id="clear">Clear output</button>
+          </div>
+          <div class="status" id="status" role="status" aria-live="polite">Ready.</div>
+        </div>
+      </div>
+
+      <aside class="panel" aria-labelledby="workflow-heading">
+        <div class="panel-head"><h2 id="workflow-heading">Workflow</h2><span id="workflow-state">Preview</span></div>
+        <div class="workflow">
+          <div class="route-meta">
+            <div class="meta"><span>Operation</span><strong id="operation">host_all_devices</strong></div>
+            <div class="meta"><span>Mode</span><strong id="mode">Read-only</strong></div>
+          </div>
+          <div class="flow" id="flow" aria-live="polite"></div>
+        </div>
+      </aside>
+
+      <section class="panel terminal-panel" aria-labelledby="terminal-heading">
+        <div class="terminal-head">
+          <div class="terminal-title"><span class="lights" aria-hidden="true"><span class="light"></span><span class="light"></span><span class="light"></span></span><span id="terminal-heading">Agent output</span></div>
+          <span id="exit-code">Not run</span>
+        </div>
+        <pre class="terminal" id="terminal">Select an example or enter a command, then analyze or run it.</pre>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="approval-dialog" aria-labelledby="approval-heading">
+    <div class="dialog-body">
+      <h2 id="approval-heading">Human approval required</h2>
+      <p>Review the exact host-bound operation. Approval is single-use; any rejection prevents the TeamViewer write.</p>
+      <pre class="approval-code" id="approval-code"></pre>
+      <div class="dialog-actions">
+        <button type="button" class="danger" id="reject">Reject</button>
+        <button type="button" class="primary" id="approve">APPROVE exact call</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+    (() => {
+      const prompt = document.getElementById('prompt');
+      const examples = document.getElementById('examples');
+      const analyze = document.getElementById('analyze');
+      const run = document.getElementById('run');
+      const clear = document.getElementById('clear');
+      const status = document.getElementById('status');
+      const flow = document.getElementById('flow');
+      const operation = document.getElementById('operation');
+      const mode = document.getElementById('mode');
+      const workflowState = document.getElementById('workflow-state');
+      const terminal = document.getElementById('terminal');
+      const exitCode = document.getElementById('exit-code');
+      const dialog = document.getElementById('approval-dialog');
+      const approvalCode = document.getElementById('approval-code');
+      const approve = document.getElementById('approve');
+      const reject = document.getElementById('reject');
+      let approvalToken = null;
+      let currentWorkflow = null;
+
+      const fallbackSteps = [
+        { id: 'prompt', label: 'Operator prompt', detail: 'One requested operation' },
+        { id: 'qwen-plan', label: 'Qwen analysis', detail: 'Confirms the exact host-compatible operation' },
+        { id: 'host', label: 'Host validation', detail: 'Binds identifiers, filters, and arguments' },
+        { id: 'mcp', label: 'Official MCP server', detail: 'Exclusive TeamViewer boundary' },
+        { id: 'response', label: 'Grounded response', detail: 'Verified MCP evidence' }
+      ];
+
+      function renderWorkflow(workflow, phase = 'preview', failed = false) {
+        currentWorkflow = workflow;
+        const steps = workflow?.steps || fallbackSteps;
+        operation.textContent = workflow?.operation || 'Not analyzed';
+        mode.textContent = workflow?.mutating ? 'Write · approval required' : 'Read-only';
+        workflowState.textContent = phase === 'running' ? 'Running' : phase === 'complete' ? 'Complete' : phase === 'approval' ? 'Awaiting approval' : 'Preview';
+        flow.replaceChildren(...steps.map((step, index) => {
+          const item = document.createElement('div');
+          let className = 'step';
+          if (phase === 'running' && index <= 2) className += ' active';
+          if (phase === 'approval' && step.id !== 'mcp' && step.id !== 'response') className += ' done';
+          if (phase === 'complete') className += failed && index === steps.length - 1 ? ' failed' : ' done';
+          item.className = className;
+          const marker = document.createElement('div');
+          marker.className = 'step-marker';
+          marker.textContent = phase === 'complete' && !failed ? '✓' : String(index + 1);
+          const copy = document.createElement('div');
+          copy.className = 'step-copy';
+          const title = document.createElement('strong');
+          title.textContent = step.label;
+          const detail = document.createElement('span');
+          detail.textContent = step.detail;
+          copy.append(title, detail);
+          item.append(marker, copy);
+          return item;
+        }));
+      }
+
+      function setBusy(busy, message) {
+        analyze.disabled = busy;
+        run.disabled = busy;
+        examples.disabled = busy;
+        status.replaceChildren();
+        if (busy) {
+          const spinner = document.createElement('span');
+          spinner.className = 'spinner';
+          spinner.setAttribute('aria-hidden', 'true');
+          status.append(spinner);
+        }
+        status.append(document.createTextNode(message));
+      }
+
+      async function api(path, payload) {
+        const response = await fetch(path, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-TeamViewer-UI': '1' },
+          body: JSON.stringify(payload)
+        });
+        const data = await response.json();
+        if (!response.ok && !data.result) throw new Error(data.error || `Request failed (${response.status})`);
+        return data;
+      }
+
+      function commandText() {
+        const value = prompt.value.trim();
+        if (!value) throw new Error('Enter one command first.');
+        return value;
+      }
+
+      function showResult(data) {
+        const result = data.result || {};
+        const chunks = [];
+        if (result.output) chunks.push(result.output);
+        if (result.diagnostics) chunks.push(`Diagnostics:\n${result.diagnostics}`);
+        terminal.textContent = chunks.join('\n\n') || 'The command returned no output.';
+        exitCode.textContent = result.exit_code === null || result.exit_code === undefined ? 'No exit code' : `Exit ${result.exit_code}`;
+        renderWorkflow(data.workflow || currentWorkflow, 'complete', !result.ok);
+        setBusy(false, result.ok ? 'Command completed.' : 'Command finished with an error.');
+      }
+
+      async function analyzePrompt() {
+        try {
+          setBusy(true, 'Analyzing the deterministic route…');
+          const data = await api('/api/analyze', { prompt: commandText() });
+          renderWorkflow(data.workflow, 'preview');
+          terminal.textContent = JSON.stringify({
+            outcome: data.workflow.outcome,
+            operation: data.workflow.operation,
+            arguments: data.workflow.arguments,
+            approval_required: data.workflow.mutating
+          }, null, 2);
+          exitCode.textContent = 'Preview';
+          setBusy(false, 'Workflow analyzed. No TeamViewer operation ran.');
+        } catch (error) {
+          setBusy(false, error.message);
+        }
+      }
+
+      async function runPrompt() {
+        try {
+          setBusy(true, 'Qwen and the official MCP workflow are running…');
+          terminal.textContent = 'Waiting for the local Qwen model and TeamViewer MCP server…';
+          exitCode.textContent = 'Running';
+          const data = await api('/api/run', { prompt: commandText() });
+          renderWorkflow(data.workflow, data.approval_required ? 'approval' : 'running');
+          if (data.approval_required) {
+            approvalToken = data.approval_token;
+            approvalCode.textContent = `Tool: ${data.workflow.operation}\nArguments:\n${JSON.stringify(data.workflow.arguments, null, 2)}`;
+            setBusy(false, 'Approval required before the write can run.');
+            dialog.showModal();
+            return;
+          }
+          showResult(data);
+        } catch (error) {
+          terminal.textContent = error.message;
+          exitCode.textContent = 'Error';
+          renderWorkflow(currentWorkflow, 'complete', true);
+          setBusy(false, error.message);
+        }
+      }
+
+      async function decide(decision) {
+        if (!approvalToken) return;
+        dialog.close();
+        setBusy(true, decision === 'APPROVE' ? 'Executing the approved call through MCP…' : 'Recording rejection…');
+        terminal.textContent = decision === 'APPROVE' ? 'Approval submitted. Waiting for Qwen and the official MCP server…' : 'Rejection submitted…';
+        const token = approvalToken;
+        approvalToken = null;
+        try {
+          const data = await api('/api/decision', { approval_token: token, decision });
+          showResult(data);
+        } catch (error) {
+          terminal.textContent = error.message;
+          exitCode.textContent = 'Error';
+          renderWorkflow(currentWorkflow, 'complete', true);
+          setBusy(false, error.message);
+        }
+      }
+
+      examples.addEventListener('change', () => { if (examples.value) prompt.value = examples.value; });
+      analyze.addEventListener('click', analyzePrompt);
+      run.addEventListener('click', runPrompt);
+      clear.addEventListener('click', () => {
+        terminal.textContent = 'Output cleared.';
+        exitCode.textContent = 'Not run';
+        status.textContent = 'Ready.';
+      });
+      approve.addEventListener('click', () => decide('APPROVE'));
+      reject.addEventListener('click', () => decide('REJECT'));
+      dialog.addEventListener('cancel', event => { event.preventDefault(); decide('REJECT'); });
+      renderWorkflow({ operation: 'host_all_devices', mutating: false, steps: fallbackSteps }, 'preview');
+    })();
+  </script>
+</body>
+</html>
